@@ -1,69 +1,80 @@
+# BetterSwitch
 
-● BetterSwitch - Product Requirements Document
+Automatically switch your monitor's input source when you switch Bluetooth keyboards.
 
-  Overview
+## What it does
 
-  A macOS menu bar app that automatically switches monitor input source when a Bluetooth   keyboard connects.
+If you use one monitor with multiple Macs (e.g., work laptop + personal Mac) and a Bluetooth keyboard that can pair with multiple devices, BetterSwitch eliminates the need to manually switch your monitor's input every time you switch keyboards.
 
-  Problem
+**Before:** Switch keyboard → Walk to monitor → Press buttons → Switch input  
+**After:** Switch keyboard → Done
 
-  When using one monitor with multiple Macs and a Bluetooth keyboard that can switch
-  between devices, users must manually switch the monitor input every time they switch
-  keyboards.
+## Features
 
-  Solution
+- Detects Bluetooth keyboard activity (Classic BT & BLE)
+- Sends DDC/CI commands to switch monitor input
+- Runs silently in menu bar
+- Simple one-page settings
 
-  Detect Bluetooth keyboard connection events and automatically send DDC/CI commands to
-  switch the monitor to the corresponding input source.
+## Requirements
 
-  Core Features
+- macOS 14.0+
+- Apple Silicon Mac (M1/M2/M3)
+- External monitor with DDC/CI support
+- [m1ddc](https://github.com/waydabber/m1ddc) installed
 
-  1. Bluetooth Keyboard Detection
+## Installation
 
-  - Monitor for specific Bluetooth keyboard connect/disconnect events
-  - Identify keyboard by device name or Bluetooth ID
+1. Install m1ddc:
+   ```bash
+   brew install m1ddc
+   ```
 
-  2. DDC/CI Input Switching
+2. Download BetterSwitch from [Releases](../../releases)
 
-  - Send DDC/CI commands to switch monitor input source
-  - Support common inputs: HDMI1, HDMI2, DisplayPort, USB-C, etc.
+3. Move to Applications and open
 
-  3. Configuration
+4. Grant Bluetooth permission when prompted
 
-  - Map keyboard connection → specific input source
-  - Example: "When MX Keys connects → switch to HDMI1"
+## Setup
 
-  4. Menu Bar App
+1. Click the keyboard icon in menu bar → Settings
+2. Click the monitor to detect it
+3. Select your input port (right-click to edit DDC ID if needed)
+4. Click the keyboard to select your Bluetooth keyboard
+5. Done! Switch keyboards and watch your monitor follow.
 
-  - Lightweight, runs in background
-  - Simple UI to configure keyboard-to-input mappings
-  - Manual input switch buttons as fallback
+## Troubleshooting
 
-  Technical Requirements
+**Monitor not detected?**
+- Make sure it's connected via DisplayPort or HDMI (not USB-C hub)
+- Check that your monitor supports DDC/CI
 
-  ┌──────────────────────┬─────────────────────────────┐
-  │ Component            │ Technology                  │
-  ├──────────────────────┼─────────────────────────────┤
-  │ Language             │ Swift                       │
-  ├──────────────────────┼─────────────────────────────┤
-  │ UI                   │ SwiftUI + AppKit (menu bar) │
-  ├──────────────────────┼─────────────────────────────┤
-  │ Bluetooth monitoring │ IOBluetooth framework       │
-  ├──────────────────────┼─────────────────────────────┤
-  │ DDC/CI commands      │ IOKit (I2C)                 │
-  ├──────────────────────┼─────────────────────────────┤
-  │ Persistence          │ UserDefaults                │
-  └──────────────────────┴─────────────────────────────┘
+**Input not switching?**
+- Verify m1ddc is installed: `which m1ddc`
+- Test manually: `m1ddc set input 17` (17 = HDMI-1)
+- Check the DDC ID matches your monitor's actual port
 
-  Setup (per Mac)
+**Keyboard not detected?**
+- Make sure Bluetooth is enabled
+- The keyboard must be paired with this Mac
 
-  1. Install BetterSwitch
-  2. Select your Bluetooth keyboard from detected devices
-  3. Select which monitor input this Mac uses
-  4. Run on login
+## DDC Input Codes
 
-  Info Needed Before Development
+| Input        | Code |
+|--------------|------|
+| HDMI-1       | 17   |
+| HDMI-2       | 18   |
+| DisplayPort-1| 15   |
+| DisplayPort-2| 16   |
+| USB-C        | 27   |
 
-  1. Monitor model (for DDC/CI compatibility)
-  2. Bluetooth keyboard model
-  3. Which input sources to support (e.g., HDMI1, HDMI2, typec)
+Right-click any port in Settings to customize the DDC ID.
+
+## License
+
+MIT
+
+## Acknowledgments
+
+- [m1ddc](https://github.com/waydabber/m1ddc) - DDC/CI tool for Apple Silicon

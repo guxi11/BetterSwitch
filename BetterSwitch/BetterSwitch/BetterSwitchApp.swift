@@ -79,15 +79,16 @@ struct BetterSwitchApp: App {
         
         // Create InputSwitchService with model context
         let context = sharedModelContainer.mainContext
-        inputSwitchService = InputSwitchService(
+        let service = InputSwitchService(
             bluetoothMonitor: bluetoothMonitor,
             ddcManager: ddcManager,
             modelContext: context
         )
+        inputSwitchService = service
         
-        // Start Bluetooth monitoring
-        bluetoothMonitor.startMonitoring()
+        // Start the input switch service (this also starts bluetooth monitoring)
+        service.start()
         
-        print("[BetterSwitchApp] Services initialized, InputSwitchService created")
+        print("[BetterSwitchApp] Services initialized and started")
     }
 }

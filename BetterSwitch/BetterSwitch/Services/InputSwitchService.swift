@@ -16,9 +16,6 @@ final class InputSwitchService {
     /// Whether automatic switching is enabled
     var isEnabled: Bool = true
     
-    /// Delay before switching (allows for keyboard reconnection settling)
-    var switchDelay: TimeInterval = 0.5
-    
     /// Last switch action performed
     private(set) var lastAction: SwitchAction?
     
@@ -32,7 +29,6 @@ final class InputSwitchService {
     private let modelContext: ModelContext
     
     private var cancellables = Set<AnyCancellable>()
-    private var pendingSwitchTask: Task<Void, Never>?
     
     /// Track the last keyboard that triggered a successful switch (to avoid redundant switches)
     private var lastSwitchedKeyboardId: String?
@@ -56,23 +52,20 @@ final class InputSwitchService {
         setupSubscriptions()
     }
     
-    deinit {
-        pendingSwitchTask?.cancel()
-    }
-    
     // MARK: - Public Methods
     
     /// Start the input switch service
     func start() {
+        print("[InputSwitchService] Starting service...")
         bluetoothMonitor.startMonitoring()
         ddcManager.enumerateDisplays()
         loadSettings()
+        print("[InputSwitchService] Service started, isEnabled: \(isEnabled)")
     }
     
     /// Stop the input switch service
     func stop() {
         bluetoothMonitor.stopMonitoring()
-        pendingSwitchTask?.cancel()
     }
     
     /// Manually trigger input switch for a keyboard
@@ -112,11 +105,16 @@ final class InputSwitchService {
     
     private func loadSettings() {
         isEnabled = AppSettings.shared.isEnabled
-        switchDelay = AppSettings.shared.switchDelay
     }
     
     private func handleKeyboardBecameActive(_ keyboard: BluetoothKeyboardInfo) {
-        guard isEnabled else { return }
+        print("[InputSwitchService] handleKeyboardBecameActive called: \(keyboard.name), id: \(keyboard.id)")
+        print("[InputSwitchService] isEnabled: \(isEnabled)")
+        
+        guard isEnabled else {
+            print("[InputSwitchService] Service disabled, skipping")
+            return
+        }
         
         let identifier = keyboard.id
         
@@ -126,17 +124,10 @@ final class InputSwitchService {
             return
         }
         
-        print("[InputSwitchService] Keyboard became active: \(keyboard.name)")
+        print("[InputSwitchService] Keyboard became active: \(keyboard.name), will perform switch")
         
-        // Cancel any pending switch
-        pendingSwitchTask?.cancel()
-        
-        // Schedule switch with delay
-        pendingSwitchTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: UInt64(switchDelay * 1_000_000_000))
-            
-            guard !Task.isCancelled else { return }
-            
+        // Perform switch immediately (no delay)
+        Task { @MainActor in
             await performSwitch(for: identifier)
         }
     }
@@ -147,85 +138,103 @@ final class InputSwitchService {
     }
     
     private func handleKeyboardDisconnected(_ keyboard: BluetoothKeyboardInfo) {
-        // Cancel any pending switch for this keyboard
-        pendingSwitchTask?.cancel()
-        
         // Optionally: could implement "switch back" on disconnect
     }
     
     @MainActor
     private func performSwitch(for keyboardIdentifier: String) async {
-        // Find mapping for this keyboard
-        let descriptor = FetchDescriptor<InputMapping>(
-            predicate: #Predicate { mapping in
-                mapping.keyboard?.identifier == keyboardIdentifier &&
-                mapping.isEnabled == true
-            }
-        )
+        print("[InputSwitchService] performSwitch called for: \(keyboardIdentifier)")
         
-        do {
-            let mappings = try modelContext.fetch(descriptor)
+        // Load simple mapping from UserDefaults
+        guard let mapping = loadSimpleMapping() else {
+            lastError = "未配置映射"
+            print("[InputSwitchService] No mapping configured")
+            return
+        }
+        print("[InputSwitchService] Mapping loaded, portCode: \(mapping.portCode)")
+        
+        // Check if the active keyboard matches the registered keyboard
+        guard let registeredKeyboard = fetchRegisteredKeyboard() else {
+            print("[InputSwitchService] No registered keyboard found")
+            return
+        }
+        print("[InputSwitchService] Registered keyboard: \(registeredKeyboard.name), id: \(registeredKeyboard.identifier)")
+        
+        guard registeredKeyboard.identifier == keyboardIdentifier else {
+            print("[InputSwitchService] Keyboard ID mismatch: registered=\(registeredKeyboard.identifier), active=\(keyboardIdentifier)")
+            return
+        }
+        
+        // Get all monitors
+        let monitors = ddcManager.monitors
+        print("[InputSwitchService] Monitors count: \(monitors.count)")
+        guard !monitors.isEmpty else {
+            lastError = "未检测到显示器"
+            print("[InputSwitchService] No monitors detected")
+            return
+        }
+        
+        var anySuccess = false
+        
+        for monitor in monitors {
+            let success = ddcManager.setInputSource(mapping.portCode, for: monitor.displayID)
             
-            guard !mappings.isEmpty else {
-                // No mapping configured for this keyboard
-                lastError = "No mapping found for keyboard"
-                return
-            }
+            let inputName = InputSource.allInputs.first { $0.code == mapping.portCode }?.name ?? "Input \(mapping.portCode)"
             
-            for mapping in mappings {
-                guard let monitor = mapping.monitor else { continue }
+            lastAction = SwitchAction(
+                keyboard: registeredKeyboard.name,
+                monitor: monitor.name,
+                input: inputName,
+                timestamp: Date(),
+                success: success
+            )
+            
+            if success {
+                anySuccess = true
+                lastError = nil
                 
-                // Find the actual display by name (displayID may change between sessions)
-                guard let actualDisplay = ddcManager.monitors.first(where: { $0.name == monitor.name }) else {
-                    print("[InputSwitchService] Monitor not found: \(monitor.name)")
-                    lastError = "Monitor not found: \(monitor.name)"
-                    continue
-                }
+                // Track this keyboard as the last one that triggered a switch
+                lastSwitchedKeyboardId = keyboardIdentifier
                 
-                // Perform the switch using the current displayID
-                let success = ddcManager.setInputSource(mapping.inputSourceCode, for: actualDisplay.displayID)
-                
-                let inputName = InputSource.allInputs.first { $0.code == mapping.inputSourceCode }?.name ?? "Input \(mapping.inputSourceCode)"
-                
-                lastAction = SwitchAction(
-                    keyboard: mapping.keyboard?.name ?? "Unknown",
-                    monitor: monitor.name,
-                    input: inputName,
-                    timestamp: Date(),
-                    success: success
+                // Post notification for UI updates
+                NotificationCenter.default.post(
+                    name: .inputSwitchPerformed,
+                    object: self,
+                    userInfo: [
+                        "keyboard": registeredKeyboard.name,
+                        "monitor": monitor.name,
+                        "input": inputName
+                    ]
                 )
                 
-                if success {
-                    lastError = nil
-                    
-                    // Track this keyboard as the last one that triggered a switch
-                    lastSwitchedKeyboardId = keyboardIdentifier
-                    
-                    // Post notification for UI updates
-                    NotificationCenter.default.post(
-                        name: .inputSwitchPerformed,
-                        object: self,
-                        userInfo: [
-                            "keyboard": mapping.keyboard?.name ?? "Unknown",
-                            "monitor": monitor.name,
-                            "input": inputName
-                        ]
+                // Show user notification if enabled
+                if AppSettings.shared.showNotifications {
+                    showNotification(
+                        title: "Input Switched",
+                        body: "\(monitor.name) switched to \(inputName)"
                     )
-                    
-                    // Show user notification if enabled
-                    if AppSettings.shared.showNotifications {
-                        showNotification(
-                            title: "Input Switched",
-                            body: "\(monitor.name) switched to \(inputName)"
-                        )
-                    }
-                } else {
-                    lastError = "Failed to switch \(monitor.name) to \(inputName)"
                 }
+            } else {
+                lastError = "Failed to switch \(monitor.name) to \(inputName)"
             }
-        } catch {
-            lastError = "Failed to fetch mappings: \(error.localizedDescription)"
         }
+        
+        if !anySuccess {
+            lastError = "所有显示器切换失败"
+        }
+    }
+    
+    private func loadSimpleMapping() -> SimpleMapping? {
+        guard let data = UserDefaults.standard.data(forKey: "simpleMapping"),
+              let mapping = try? JSONDecoder().decode(SimpleMapping.self, from: data) else {
+            return nil
+        }
+        return mapping
+    }
+    
+    private func fetchRegisteredKeyboard() -> BluetoothKeyboard? {
+        let descriptor = FetchDescriptor<BluetoothKeyboard>()
+        return try? modelContext.fetch(descriptor).first
     }
     
     private func showNotification(title: String, body: String) {
@@ -261,6 +270,12 @@ final class InputSwitchService {
         
         return keyboard
     }
+}
+
+// MARK: - Simple Mapping Structure
+
+struct SimpleMapping: Codable {
+    let portCode: UInt8
 }
 
 // MARK: - Notification Names
