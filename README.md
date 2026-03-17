@@ -2,6 +2,8 @@
 
 Automatically switch your monitor's input source when you switch Bluetooth keyboards.
 
+![BetterSwitch Demo](docs/demo.png)
+
 ## What it does
 
 If you use one monitor with multiple Macs (e.g., work laptop + personal Mac) and a Bluetooth keyboard that can pair with multiple devices, BetterSwitch eliminates the need to manually switch your monitor's input every time you switch keyboards.
