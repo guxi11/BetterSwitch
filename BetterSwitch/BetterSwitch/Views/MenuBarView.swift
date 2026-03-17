@@ -12,11 +12,23 @@ struct MenuBarView: View {
     @Environment(AppState.self) private var appState
     @Environment(DDCManager.self) private var ddcManager
     
+    // Use customPorts from AppStorage to match Settings page
+    @AppStorage("customPorts") private var customPortsData: Data = Data()
+    
+    private var ports: [EditablePort] {
+        if let decoded = try? JSONDecoder().decode([EditablePort].self, from: customPortsData),
+           !decoded.isEmpty {
+            return decoded
+        }
+        // Fallback to default ports
+        return InputSource.commonInputs.map { EditablePort(code: $0.code, name: $0.name) }
+    }
+    
     var body: some View {
         // Quick switch buttons
-        ForEach(InputSource.commonInputs) { input in
-            Button(input.name) {
-                switchToInput(input.code)
+        ForEach(ports) { port in
+            Button(port.name) {
+                switchToInput(port.code)
             }
         }
         

@@ -30,9 +30,6 @@ final class InputSwitchService {
     
     private var cancellables = Set<AnyCancellable>()
     
-    /// Track the last keyboard that triggered a successful switch (to avoid redundant switches)
-    private var lastSwitchedKeyboardId: String?
-    
     /// Represents a switch action
     struct SwitchAction {
         let keyboard: String
@@ -118,11 +115,10 @@ final class InputSwitchService {
         
         let identifier = keyboard.id
         
-        // Skip if this keyboard already triggered the last successful switch
-        if lastSwitchedKeyboardId == identifier {
-            print("[InputSwitchService] Keyboard \(keyboard.name) already active, skipping redundant switch")
-            return
-        }
+        // Note: BluetoothMonitor already handles debouncing and reactivation detection,
+        // so we trust its judgment and always perform the switch when notified.
+        // Previously we had redundant lastSwitchedKeyboardId check here which caused
+        // the switch to fail on second activation.
         
         print("[InputSwitchService] Keyboard became active: \(keyboard.name), will perform switch")
         
@@ -192,9 +188,6 @@ final class InputSwitchService {
             if success {
                 anySuccess = true
                 lastError = nil
-                
-                // Track this keyboard as the last one that triggered a switch
-                lastSwitchedKeyboardId = keyboardIdentifier
                 
                 // Post notification for UI updates
                 NotificationCenter.default.post(

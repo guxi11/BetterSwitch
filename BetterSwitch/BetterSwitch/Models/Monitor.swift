@@ -58,7 +58,7 @@ struct InputSource: Codable, Hashable, Identifiable {
     static let displayPort2 = InputSource(code: 0x10, name: "DisplayPort-2")
     static let hdmi1 = InputSource(code: 0x11, name: "HDMI-1")
     static let hdmi2 = InputSource(code: 0x12, name: "HDMI-2")
-    static let usbC = InputSource(code: 0x13, name: "USB-C")
+    static let usbC = InputSource(code: 0x1B, name: "USB-C")  // 0x1B = 27
     
     /// Common inputs for most modern monitors
     static let commonInputs: [InputSource] = [

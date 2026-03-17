@@ -93,6 +93,16 @@ final class DDCManager {
         }
         
         let monitor = monitors[monitorIndex]
+        
+        // Check current input first to avoid unnecessary switching
+        if let currentInput = getCurrentInputSource(for: monitor.displayIndex) {
+            print("[DDCManager] Current input for \(monitor.name): \(currentInput)")
+            if currentInput == inputCode {
+                print("[DDCManager] Already on target input \(inputCode), skipping switch")
+                return true
+            }
+        }
+        
         print("[DDCManager] Switching \(monitor.name) to input \(inputCode)")
         
         var success = false
@@ -115,6 +125,52 @@ final class DDCManager {
         }
         
         return success
+    }
+    
+    /// Get the current input source for a display
+    func getCurrentInputSource(for displayIndex: Int) -> UInt8? {
+        let script = """
+        do shell script "/opt/homebrew/bin/m1ddc get input -d \(displayIndex)"
+        """
+        
+        var error: NSDictionary?
+        if let appleScript = NSAppleScript(source: script) {
+            let result = appleScript.executeAndReturnError(&error)
+            
+            if error != nil {
+                // Try alternative path
+                return getCurrentInputSourceAlt(for: displayIndex)
+            }
+            
+            if let output = result.stringValue,
+               let inputValue = UInt8(output.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                return inputValue
+            }
+        }
+        
+        return nil
+    }
+    
+    private func getCurrentInputSourceAlt(for displayIndex: Int) -> UInt8? {
+        let script = """
+        do shell script "export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH; m1ddc get input -d \(displayIndex)"
+        """
+        
+        var error: NSDictionary?
+        if let appleScript = NSAppleScript(source: script) {
+            let result = appleScript.executeAndReturnError(&error)
+            
+            if error != nil {
+                return nil
+            }
+            
+            if let output = result.stringValue,
+               let inputValue = UInt8(output.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                return inputValue
+            }
+        }
+        
+        return nil
     }
     
     // MARK: - m1ddc via AppleScript

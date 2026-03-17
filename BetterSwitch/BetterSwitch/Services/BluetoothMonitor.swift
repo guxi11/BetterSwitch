@@ -193,7 +193,9 @@ final class BluetoothMonitor: ObservableObject {
             monitor.handleHIDInput(value)
         }, context)
         
-        IOHIDManagerScheduleWithRunLoop(manager, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
+        // Use commonModes instead of defaultMode to ensure callbacks work even when
+        // the app is in background or during UI tracking (e.g., menu bar interactions)
+        IOHIDManagerScheduleWithRunLoop(manager, CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue)
         
         let result = IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
         if result == kIOReturnSuccess {
@@ -206,7 +208,7 @@ final class BluetoothMonitor: ObservableObject {
     private func stopHIDMonitoring() {
         guard let manager = hidManager else { return }
         
-        IOHIDManagerUnscheduleFromRunLoop(manager, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
+        IOHIDManagerUnscheduleFromRunLoop(manager, CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue)
         IOHIDManagerClose(manager, IOOptionBits(kIOHIDOptionsTypeNone))
         hidManager = nil
         
@@ -236,7 +238,10 @@ final class BluetoothMonitor: ObservableObject {
         
         // Trigger if:
         // 1. Different keyboard than last active, OR
-        // 2. Same keyboard but it's been more than 5 seconds (re-activation after switching away)
+        // 2. Same keyboard but it's been more than 5 seconds (potential reactivation after switching away)
+        //
+        // Note: DDCManager will check the current input source before switching,
+        // so even if we trigger here, no actual switch will happen if already on target input.
         let isDifferentKeyboard = lastActiveKeyboard?.id != keyboard.id
         let isReactivation = timeSinceLastActivity > 5.0
         
