@@ -67,6 +67,15 @@ final class BluetoothMonitor: ObservableObject {
     private var hidManager: IOHIDManager?
     private var lastKeyboardActivity: [String: Date] = [:]
     
+    // Track when we last sent a switch event for each keyboard
+    // This prevents repeated triggering while using the same keyboard
+    private var lastSwitchEventTime: [String: Date] = [:]
+    
+    // Minimum time between switch events for the same keyboard (in seconds)
+    // This should be long enough that normal typing pauses don't trigger repeated switches,
+    // but short enough that switching between devices still works quickly
+    private let switchEventCooldown: TimeInterval = 30.0
+    
     init() {}
     
     deinit {
@@ -236,17 +245,39 @@ final class BluetoothMonitor: ObservableObject {
         // Find matching keyboard in paired list
         guard let keyboard = findMatchingKeyboard(deviceName) else { return }
         
-        // Trigger if:
-        // 1. Different keyboard than last active, OR
-        // 2. Same keyboard but it's been more than 5 seconds (potential reactivation after switching away)
+        // Determine if we should send a switch event:
+        // 1. Different keyboard than last active - always trigger
+        // 2. Same keyboard - only trigger if:
+        //    a) Activity gap > 5 seconds (potential device switch), AND
+        //    b) Cooldown period has passed since last switch event for this keyboard
         //
-        // Note: DDCManager will check the current input source before switching,
-        // so even if we trigger here, no actual switch will happen if already on target input.
+        // The cooldown prevents repeated DDC operations when user is typing on the same
+        // keyboard with occasional pauses (thinking, reading, etc.)
         let isDifferentKeyboard = lastActiveKeyboard?.id != keyboard.id
         let isReactivation = timeSinceLastActivity > 5.0
         
-        if isDifferentKeyboard || isReactivation {
-            print("[BluetoothMonitor] KEYBOARD ACTIVE: \(keyboard.name) (different: \(isDifferentKeyboard), reactivation: \(isReactivation))")
+        var shouldTrigger = false
+        
+        if isDifferentKeyboard {
+            // Different keyboard - always trigger
+            shouldTrigger = true
+        } else if isReactivation {
+            // Same keyboard reactivation - check cooldown
+            let lastSwitchTime = lastSwitchEventTime[keyboard.id] ?? Date.distantPast
+            let timeSinceLastSwitch = now.timeIntervalSince(lastSwitchTime)
+            
+            if timeSinceLastSwitch >= switchEventCooldown {
+                shouldTrigger = true
+            } else {
+                print("[BluetoothMonitor] Reactivation detected but cooldown active (\(String(format: "%.1f", switchEventCooldown - timeSinceLastSwitch))s remaining), skipping")
+            }
+        }
+        
+        if shouldTrigger {
+            print("[BluetoothMonitor] KEYBOARD ACTIVE: \(keyboard.name) (different: \(isDifferentKeyboard), reactivation: \(isReactivation), gap: \(String(format: "%.1f", timeSinceLastActivity))s)")
+            
+            // Update last switch event time for this keyboard
+            lastSwitchEventTime[keyboard.id] = now
             
             DispatchQueue.main.async {
                 self.lastActiveKeyboard = keyboard

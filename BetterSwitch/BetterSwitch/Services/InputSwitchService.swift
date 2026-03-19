@@ -115,11 +115,6 @@ final class InputSwitchService {
         
         let identifier = keyboard.id
         
-        // Note: BluetoothMonitor already handles debouncing and reactivation detection,
-        // so we trust its judgment and always perform the switch when notified.
-        // Previously we had redundant lastSwitchedKeyboardId check here which caused
-        // the switch to fail on second activation.
-        
         print("[InputSwitchService] Keyboard became active: \(keyboard.name), will perform switch")
         
         // Perform switch immediately (no delay)

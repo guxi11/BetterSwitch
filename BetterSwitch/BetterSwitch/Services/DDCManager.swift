@@ -95,15 +95,30 @@ final class DDCManager {
         let monitor = monitors[monitorIndex]
         
         // Check current input first to avoid unnecessary switching
-        if let currentInput = getCurrentInputSource(for: monitor.displayIndex) {
-            print("[DDCManager] Current input for \(monitor.name): \(currentInput)")
-            if currentInput == inputCode {
-                print("[DDCManager] Already on target input \(inputCode), skipping switch")
-                return true
+        // Retry up to 3 times if read fails
+        var currentInput: UInt8? = nil
+        for attempt in 1...3 {
+            currentInput = getCurrentInputSource(for: monitor.displayIndex)
+            if currentInput != nil {
+                break
             }
+            print("[DDCManager] Read attempt \(attempt) failed, retrying...")
+            Thread.sleep(forTimeInterval: 0.1)  // Brief delay before retry
         }
         
-        print("[DDCManager] Switching \(monitor.name) to input \(inputCode)")
+        guard let confirmedInput = currentInput else {
+            print("[DDCManager] Failed to read current input after 3 attempts, aborting switch")
+            lastError = "Cannot read current input"
+            return false
+        }
+        
+        print("[DDCManager] Current input for \(monitor.name): \(confirmedInput), target: \(inputCode)")
+        if confirmedInput == inputCode {
+            print("[DDCManager] Already on target input \(inputCode), skipping switch")
+            return true
+        }
+        
+        print("[DDCManager] INPUT MISMATCH - current: \(confirmedInput), target: \(inputCode). Will switch \(monitor.name)")
         
         var success = false
         
@@ -129,6 +144,7 @@ final class DDCManager {
     
     /// Get the current input source for a display
     func getCurrentInputSource(for displayIndex: Int) -> UInt8? {
+        print("[DDCManager] GET input for display \(displayIndex)...")
         let script = """
         do shell script "/opt/homebrew/bin/m1ddc get input -d \(displayIndex)"
         """
@@ -138,16 +154,19 @@ final class DDCManager {
             let result = appleScript.executeAndReturnError(&error)
             
             if error != nil {
+                print("[DDCManager] GET input failed, trying alt path...")
                 // Try alternative path
                 return getCurrentInputSourceAlt(for: displayIndex)
             }
             
             if let output = result.stringValue,
                let inputValue = UInt8(output.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                print("[DDCManager] GET input returned: \(inputValue)")
                 return inputValue
             }
         }
         
+        print("[DDCManager] GET input returned nil")
         return nil
     }
     
