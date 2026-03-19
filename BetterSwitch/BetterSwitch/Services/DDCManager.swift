@@ -145,6 +145,43 @@ final class DDCManager {
     /// Get the current input source for a display
     func getCurrentInputSource(for displayIndex: Int) -> UInt8? {
         print("[DDCManager] GET input for display \(displayIndex)...")
+        
+        // Use Process directly instead of AppleScript for more reliable execution
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/m1ddc")
+        process.arguments = ["get", "input", "-d", "\(displayIndex)"]
+        
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        
+        do {
+            try process.run()
+            process.waitUntilExit()
+            
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            if let output = String(data: data, encoding: .utf8) {
+                let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+                print("[DDCManager] GET input raw output: '\(trimmed)'")
+                
+                if let inputValue = UInt8(trimmed) {
+                    print("[DDCManager] GET input parsed value: \(inputValue)")
+                    return inputValue
+                } else {
+                    print("[DDCManager] GET input failed to parse '\(trimmed)' as UInt8")
+                }
+            }
+        } catch {
+            print("[DDCManager] GET input Process error: \(error)")
+            // Try AppleScript as fallback
+            return getCurrentInputSourceViaAppleScript(for: displayIndex)
+        }
+        
+        return nil
+    }
+    
+    private func getCurrentInputSourceViaAppleScript(for displayIndex: Int) -> UInt8? {
+        print("[DDCManager] GET input via AppleScript for display \(displayIndex)...")
         let script = """
         do shell script "/opt/homebrew/bin/m1ddc get input -d \(displayIndex)"
         """
@@ -153,39 +190,16 @@ final class DDCManager {
         if let appleScript = NSAppleScript(source: script) {
             let result = appleScript.executeAndReturnError(&error)
             
-            if error != nil {
-                print("[DDCManager] GET input failed, trying alt path...")
-                // Try alternative path
-                return getCurrentInputSourceAlt(for: displayIndex)
-            }
-            
-            if let output = result.stringValue,
-               let inputValue = UInt8(output.trimmingCharacters(in: .whitespacesAndNewlines)) {
-                print("[DDCManager] GET input returned: \(inputValue)")
-                return inputValue
-            }
-        }
-        
-        print("[DDCManager] GET input returned nil")
-        return nil
-    }
-    
-    private func getCurrentInputSourceAlt(for displayIndex: Int) -> UInt8? {
-        let script = """
-        do shell script "export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH; m1ddc get input -d \(displayIndex)"
-        """
-        
-        var error: NSDictionary?
-        if let appleScript = NSAppleScript(source: script) {
-            let result = appleScript.executeAndReturnError(&error)
-            
-            if error != nil {
+            if let error = error {
+                print("[DDCManager] GET input AppleScript error: \(error)")
                 return nil
             }
             
-            if let output = result.stringValue,
-               let inputValue = UInt8(output.trimmingCharacters(in: .whitespacesAndNewlines)) {
-                return inputValue
+            if let output = result.stringValue {
+                let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+                if let inputValue = UInt8(trimmed) {
+                    return inputValue
+                }
             }
         }
         
