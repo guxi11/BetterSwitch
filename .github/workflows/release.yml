@@ -4,50 +4,29 @@ on:
   push:
     tags:
       - 'v*'
-      - '[0-9]+.[0-9]+.[0-9]+'
 
 permissions:
   contents: write
 
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
-
       - name: Build
         run: |
-          set -eo pipefail
           xcodebuild -project BetterSwitch/BetterSwitch.xcodeproj \
             -scheme BetterSwitch \
             -configuration Release \
             -derivedDataPath build \
-            -arch arm64 \
             CODE_SIGN_IDENTITY="-" \
-            CODE_SIGNING_ALLOWED=NO \
-            2>&1 | tee build.log
-          
-          # Show summary
-          tail -20 build.log
-
-      - name: Verify Build Output
-        run: |
-          echo "Checking build output..."
-          ls -la build/Build/Products/Release/
-          if [ ! -d "build/Build/Products/Release/BetterSwitch.app" ]; then
-            echo "ERROR: BetterSwitch.app not found!"
-            exit 1
-          fi
-          echo "Build successful!"
+            CODE_SIGNING_ALLOWED=NO
 
       - name: Package
         run: |
           cd build/Build/Products/Release
           zip -r -y BetterSwitch.zip BetterSwitch.app
-          echo "Package size: $(du -h BetterSwitch.zip | cut -f1)"
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
