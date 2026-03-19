@@ -34,9 +34,14 @@ If you use one monitor with multiple Macs (e.g., work laptop + personal Mac) and
 
 2. Download BetterSwitch from [Releases](../../releases)
 
-3. Move to Applications and open
+3. Remove quarantine attribute (required for unsigned apps):
+   ```bash
+   xattr -cr ~/Downloads/BetterSwitch.app
+   ```
 
-4. Grant Bluetooth permission when prompted
+4. Move to Applications and open
+
+5. Grant Bluetooth permission when prompted
 
 ## Setup
 
