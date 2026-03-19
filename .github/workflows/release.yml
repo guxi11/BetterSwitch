@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - 'v*'
+      - '[0-9]+.[0-9]+.[0-9]+'
 
 permissions:
   contents: write
@@ -19,7 +20,7 @@ jobs:
 
       - name: Build
         run: |
-          set -e
+          set -eo pipefail
           xcodebuild -project BetterSwitch/BetterSwitch.xcodeproj \
             -scheme BetterSwitch \
             -configuration Release \
@@ -27,7 +28,14 @@ jobs:
             -arch arm64 \
             CODE_SIGN_IDENTITY="-" \
             CODE_SIGNING_ALLOWED=NO \
-            | xcpretty || true
+            2>&1 | tee build.log | xcpretty
+          
+          # Check if build actually succeeded
+          if ! grep -q "BUILD SUCCEEDED" build.log; then
+            echo "Build failed! Full log:"
+            cat build.log
+            exit 1
+          fi
 
       - name: Verify Build Output
         run: |
