@@ -109,6 +109,8 @@ struct SettingsView: View {
             if let mapping = loadMapping() {
                 selectedPortCode = mapping.portCode
             }
+            // 将窗口置于最前面
+            NSApplication.shared.activate(ignoringOtherApps: true)
         }
         .sheet(item: $editingPort) { port in
             EditDDCSheet(
