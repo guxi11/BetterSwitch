@@ -166,6 +166,12 @@ final class DDCManager {
                 
                 if let inputValue = UInt8(trimmed) {
                     print("[DDCManager] GET input parsed value: \(inputValue)")
+                    // Treat 0 as invalid/unreadable - valid DDC input codes start from 1
+                    // (VGA=1, DVI=3, Composite=4, S-Video=5, DP=15-16, HDMI=17-18, USB-C=27, etc.)
+                    if inputValue == 0 {
+                        print("[DDCManager] GET input returned 0, treating as invalid read")
+                        return nil
+                    }
                     return inputValue
                 } else {
                     print("[DDCManager] GET input failed to parse '\(trimmed)' as UInt8")
@@ -198,6 +204,11 @@ final class DDCManager {
             if let output = result.stringValue {
                 let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
                 if let inputValue = UInt8(trimmed) {
+                    // Treat 0 as invalid/unreadable
+                    if inputValue == 0 {
+                        print("[DDCManager] GET input (AppleScript) returned 0, treating as invalid read")
+                        return nil
+                    }
                     return inputValue
                 }
             }
