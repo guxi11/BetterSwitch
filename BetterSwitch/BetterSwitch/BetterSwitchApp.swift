@@ -22,7 +22,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         initializeServices()
     }
     
-    func initializeServices() {
+    @MainActor func initializeServices() {
         // Create model container
         let schema = Schema([
             BluetoothKeyboard.self,
