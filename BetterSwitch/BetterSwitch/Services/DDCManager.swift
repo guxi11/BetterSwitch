@@ -31,6 +31,28 @@ final class DDCManager {
         var supportsDDC: Bool = true
     }
     
+    // MARK: - Valid Input Source Codes
+    
+    /// Known invalid values that indicate DDC/CI communication errors
+    /// - 0: Read timeout or no response
+    /// - 0x6E (110): DDC/CI I2C write address leaked into response
+    /// - 0x6F (111): DDC/CI I2C read address leaked into response
+    /// - 0xFF (255): Common error/invalid marker
+    private static let knownInvalidCodes: Set<UInt8> = [0, 0x6E, 0x6F, 0xFF]
+    
+    /// Check if an input code is a valid DDC/CI input source
+    /// Valid MCCS input codes are in range 1-27 (standard) with some vendor extensions up to ~30
+    private func isValidInputCode(_ code: UInt8) -> Bool {
+        // Reject known error codes
+        if Self.knownInvalidCodes.contains(code) {
+            return false
+        }
+        // Valid input codes are generally 1-27 per VESA MCCS standard
+        // Some vendors use codes up to ~30 for USB-C variants
+        // Anything above 30 is almost certainly an error
+        return code >= 1 && code <= 30
+    }
+    
     // MARK: - Public Methods
     
     /// Enumerate all connected displays
@@ -166,10 +188,9 @@ final class DDCManager {
                 
                 if let inputValue = UInt8(trimmed) {
                     print("[DDCManager] GET input parsed value: \(inputValue)")
-                    // Treat 0 as invalid/unreadable - valid DDC input codes start from 1
-                    // (VGA=1, DVI=3, Composite=4, S-Video=5, DP=15-16, HDMI=17-18, USB-C=27, etc.)
-                    if inputValue == 0 {
-                        print("[DDCManager] GET input returned 0, treating as invalid read")
+                    // Validate input code - reject invalid values like 0, 110, etc.
+                    if !isValidInputCode(inputValue) {
+                        print("[DDCManager] GET input returned invalid code \(inputValue), treating as read error")
                         return nil
                     }
                     return inputValue
@@ -204,9 +225,9 @@ final class DDCManager {
             if let output = result.stringValue {
                 let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
                 if let inputValue = UInt8(trimmed) {
-                    // Treat 0 as invalid/unreadable
-                    if inputValue == 0 {
-                        print("[DDCManager] GET input (AppleScript) returned 0, treating as invalid read")
+                    // Validate input code
+                    if !isValidInputCode(inputValue) {
+                        print("[DDCManager] GET input (AppleScript) returned invalid code \(inputValue), treating as read error")
                         return nil
                     }
                     return inputValue
