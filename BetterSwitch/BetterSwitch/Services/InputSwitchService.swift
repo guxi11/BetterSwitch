@@ -53,11 +53,9 @@ final class InputSwitchService {
     
     /// Start the input switch service
     func start() {
-        print("[InputSwitchService] Starting service...")
         bluetoothMonitor.startMonitoring()
         ddcManager.enumerateDisplays()
         loadSettings()
-        print("[InputSwitchService] Service started, isEnabled: \(isEnabled)")
     }
     
     /// Stop the input switch service
@@ -105,26 +103,17 @@ final class InputSwitchService {
     }
     
     private func handleKeyboardBecameActive(_ keyboard: BluetoothKeyboardInfo) {
-        print("[InputSwitchService] handleKeyboardBecameActive called: \(keyboard.name), id: \(keyboard.id)")
-        print("[InputSwitchService] isEnabled: \(isEnabled)")
-        
         guard isEnabled else {
-            print("[InputSwitchService] Service disabled, skipping")
             return
         }
         
-        let identifier = keyboard.id
-        
-        print("[InputSwitchService] Keyboard became active: \(keyboard.name), will perform switch")
-        
         // Perform switch immediately (no delay)
         Task { @MainActor in
-            await performSwitch(for: identifier)
+            await performSwitch(for: keyboard.id)
         }
     }
     
     private func handleKeyboardConnected(_ keyboard: BluetoothKeyboardInfo) {
-        print("[InputSwitchService] Keyboard connected: \(keyboard.name)")
         // Connection events are handled but activity-based switching is preferred
     }
     
@@ -134,34 +123,25 @@ final class InputSwitchService {
     
     @MainActor
     private func performSwitch(for keyboardIdentifier: String) async {
-        print("[InputSwitchService] performSwitch called for: \(keyboardIdentifier)")
-        
         // Load simple mapping from UserDefaults
         guard let mapping = loadSimpleMapping() else {
             lastError = "未配置映射"
-            print("[InputSwitchService] No mapping configured")
             return
         }
-        print("[InputSwitchService] Mapping loaded, portCode: \(mapping.portCode)")
         
         // Check if the active keyboard matches the registered keyboard
         guard let registeredKeyboard = fetchRegisteredKeyboard() else {
-            print("[InputSwitchService] No registered keyboard found")
             return
         }
-        print("[InputSwitchService] Registered keyboard: \(registeredKeyboard.name), id: \(registeredKeyboard.identifier)")
         
         guard registeredKeyboard.identifier == keyboardIdentifier else {
-            print("[InputSwitchService] Keyboard ID mismatch: registered=\(registeredKeyboard.identifier), active=\(keyboardIdentifier)")
             return
         }
         
         // Get all monitors
         let monitors = ddcManager.monitors
-        print("[InputSwitchService] Monitors count: \(monitors.count)")
         guard !monitors.isEmpty else {
             lastError = "未检测到显示器"
-            print("[InputSwitchService] No monitors detected")
             return
         }
         

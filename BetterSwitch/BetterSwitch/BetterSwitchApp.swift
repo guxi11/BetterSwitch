@@ -10,56 +10,37 @@ import SwiftData
 import Combine
 import IOBluetooth
 
-@main
-struct BetterSwitchApp: App {
-    @State private var appState = AppState()
-    @State private var ddcManager = DDCManager()
-    @StateObject private var bluetoothMonitor = BluetoothMonitor()
-    @State private var inputSwitchService: InputSwitchService?
-    @State private var isInitialized = false
+// App Delegate to handle app lifecycle
+class AppDelegate: NSObject, NSApplicationDelegate {
+    var appState: AppState!
+    var ddcManager: DDCManager!
+    var bluetoothMonitor: BluetoothMonitor!
+    var inputSwitchService: InputSwitchService!
+    var modelContainer: ModelContainer!
     
-    var sharedModelContainer: ModelContainer = {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        initializeServices()
+    }
+    
+    func initializeServices() {
+        // Create model container
         let schema = Schema([
             BluetoothKeyboard.self,
             Monitor.self,
             InputMapping.self,
         ])
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
-
+        
         do {
-            return try ModelContainer(for: schema, configurations: [modelConfiguration])
+            modelContainer = try ModelContainer(for: schema, configurations: [modelConfiguration])
         } catch {
             fatalError("Could not create ModelContainer: \(error)")
         }
-    }()
-
-    var body: some Scene {
-        // Menu bar app - primary interface
-        MenuBarExtra("BetterSwitch", systemImage: "keyboard.badge.ellipsis") {
-            MenuBarView()
-                .environment(appState)
-                .environment(ddcManager)
-                .modelContainer(sharedModelContainer)
-                .task {
-                    await initializeServicesIfNeeded()
-                }
-        }
-        .menuBarExtraStyle(.menu)
         
-        // Settings window - opens from menu bar
-        Settings {
-            SettingsView()
-                .environment(appState)
-                .environment(ddcManager)
-                .environmentObject(bluetoothMonitor)
-                .modelContainer(sharedModelContainer)
-        }
-    }
-    
-    @MainActor
-    private func initializeServicesIfNeeded() async {
-        guard !isInitialized else { return }
-        isInitialized = true
+        // Initialize managers
+        appState = AppState()
+        ddcManager = DDCManager()
+        bluetoothMonitor = BluetoothMonitor()
         
         // Wire up AppState to DDCManager
         appState.ddcManager = ddcManager
@@ -78,17 +59,51 @@ struct BetterSwitchApp: App {
         }
         
         // Create InputSwitchService with model context
-        let context = sharedModelContainer.mainContext
-        let service = InputSwitchService(
+        let context = modelContainer.mainContext
+        inputSwitchService = InputSwitchService(
             bluetoothMonitor: bluetoothMonitor,
             ddcManager: ddcManager,
             modelContext: context
         )
-        inputSwitchService = service
         
         // Start the input switch service (this also starts bluetooth monitoring)
-        service.start()
+        inputSwitchService.start()
         
-        print("[BetterSwitchApp] Services initialized and started")
+        print("[BetterSwitch] Started with \(ddcManager.monitors.count) monitor(s)")
+    }
+}
+
+@main
+struct BetterSwitchApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+
+    var body: some Scene {
+        // Menu bar app - primary interface
+        MenuBarExtra("BetterSwitch", systemImage: "keyboard.badge.ellipsis") {
+            MenuBarView()
+                .environment(appDelegate.appState ?? AppState())
+                .environment(appDelegate.ddcManager ?? DDCManager())
+                .modelContainer(appDelegate.modelContainer ?? createFallbackContainer())
+        }
+        .menuBarExtraStyle(.menu)
+        
+        // Settings window - opens from menu bar
+        Settings {
+            SettingsView()
+                .environment(appDelegate.appState ?? AppState())
+                .environment(appDelegate.ddcManager ?? DDCManager())
+                .environmentObject(appDelegate.bluetoothMonitor ?? BluetoothMonitor())
+                .modelContainer(appDelegate.modelContainer ?? createFallbackContainer())
+        }
+    }
+    
+    private func createFallbackContainer() -> ModelContainer {
+        let schema = Schema([
+            BluetoothKeyboard.self,
+            Monitor.self,
+            InputMapping.self,
+        ])
+        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
+        return try! ModelContainer(for: schema, configurations: [modelConfiguration])
     }
 }

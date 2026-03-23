@@ -105,60 +105,50 @@ final class DDCManager {
     /// Set the input source for a display
     /// Input codes: HDMI1=17, HDMI2=18, DP1=15, DP2=16, USBC=27
     func setInputSource(_ inputCode: UInt8, for displayID: CGDirectDisplayID) -> Bool {
-        print("[DDCManager] setInputSource called with displayID: \(displayID), inputCode: \(inputCode)")
-        print("[DDCManager] Available monitors: \(monitors.map { "\($0.name): \($0.displayID)" })")
-        
         guard let monitorIndex = monitors.firstIndex(where: { $0.displayID == displayID }) else {
             lastError = "Display not found (ID: \(displayID))"
-            print("[DDCManager] ERROR: Display not found with ID \(displayID)")
             return false
         }
         
         let monitor = monitors[monitorIndex]
         
-        // Check current input first to avoid unnecessary switching
-        // Retry up to 3 times if read fails
+        // Try to read current input with retries
+        // DDC/CI can occasionally return invalid values (0, 110, etc.) due to timing issues
         var currentInput: UInt8? = nil
         for attempt in 1...3 {
             currentInput = getCurrentInputSource(for: monitor.displayIndex)
             if currentInput != nil {
                 break
             }
-            print("[DDCManager] Read attempt \(attempt) failed, retrying...")
-            Thread.sleep(forTimeInterval: 0.1)  // Brief delay before retry
+            Thread.sleep(forTimeInterval: 0.3)
         }
         
-        guard let confirmedInput = currentInput else {
-            print("[DDCManager] Failed to read current input after 3 attempts, aborting switch")
-            lastError = "Cannot read current input"
-            return false
+        if let confirmedInput = currentInput {
+            if confirmedInput == inputCode {
+                print("[DDCManager] \(monitor.name): already on input \(inputCode), skipping")
+                return true
+            }
+            print("[DDCManager] \(monitor.name): switching from \(confirmedInput) to \(inputCode)")
+        } else {
+            print("[DDCManager] \(monitor.name): switching to input \(inputCode)")
         }
-        
-        print("[DDCManager] Current input for \(monitor.name): \(confirmedInput), target: \(inputCode)")
-        if confirmedInput == inputCode {
-            print("[DDCManager] Already on target input \(inputCode), skipping switch")
-            return true
-        }
-        
-        print("[DDCManager] INPUT MISMATCH - current: \(confirmedInput), target: \(inputCode). Will switch \(monitor.name)")
         
         var success = false
         
         // Method 1: Use AppleScript to run m1ddc (bypasses Hardened Runtime restrictions)
         success = runM1DDCViaAppleScript(displayIndex: monitor.displayIndex, inputCode: inputCode)
-        print("[DDCManager] AppleScript result: \(success)")
         
         // Method 2: Native I2C (fallback)
         if !success && monitor.servicePort != 0 {
             success = sendDDCViaNative(service: monitor.servicePort, inputCode: inputCode)
-            print("[DDCManager] Native I2C result: \(success)")
         }
         
         if success {
-            monitors[monitorIndex].currentInput = inputCode
             lastError = nil
+            print("[DDCManager] \(monitor.name): switch successful")
         } else {
             lastError = "DDC failed. Ensure m1ddc is installed: brew install m1ddc"
+            print("[DDCManager] \(monitor.name): switch failed")
         }
         
         return success
@@ -166,8 +156,6 @@ final class DDCManager {
     
     /// Get the current input source for a display
     func getCurrentInputSource(for displayIndex: Int) -> UInt8? {
-        print("[DDCManager] GET input for display \(displayIndex)...")
-        
         // Use Process directly instead of AppleScript for more reliable execution
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/m1ddc")
@@ -184,22 +172,16 @@ final class DDCManager {
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             if let output = String(data: data, encoding: .utf8) {
                 let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
-                print("[DDCManager] GET input raw output: '\(trimmed)'")
                 
                 if let inputValue = UInt8(trimmed) {
-                    print("[DDCManager] GET input parsed value: \(inputValue)")
                     // Validate input code - reject invalid values like 0, 110, etc.
                     if !isValidInputCode(inputValue) {
-                        print("[DDCManager] GET input returned invalid code \(inputValue), treating as read error")
                         return nil
                     }
                     return inputValue
-                } else {
-                    print("[DDCManager] GET input failed to parse '\(trimmed)' as UInt8")
                 }
             }
         } catch {
-            print("[DDCManager] GET input Process error: \(error)")
             // Try AppleScript as fallback
             return getCurrentInputSourceViaAppleScript(for: displayIndex)
         }
@@ -208,7 +190,6 @@ final class DDCManager {
     }
     
     private func getCurrentInputSourceViaAppleScript(for displayIndex: Int) -> UInt8? {
-        print("[DDCManager] GET input via AppleScript for display \(displayIndex)...")
         let script = """
         do shell script "/opt/homebrew/bin/m1ddc get input -d \(displayIndex)"
         """
@@ -217,8 +198,7 @@ final class DDCManager {
         if let appleScript = NSAppleScript(source: script) {
             let result = appleScript.executeAndReturnError(&error)
             
-            if let error = error {
-                print("[DDCManager] GET input AppleScript error: \(error)")
+            if error != nil {
                 return nil
             }
             
@@ -227,7 +207,6 @@ final class DDCManager {
                 if let inputValue = UInt8(trimmed) {
                     // Validate input code
                     if !isValidInputCode(inputValue) {
-                        print("[DDCManager] GET input (AppleScript) returned invalid code \(inputValue), treating as read error")
                         return nil
                     }
                     return inputValue

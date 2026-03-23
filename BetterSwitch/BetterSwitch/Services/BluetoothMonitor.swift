@@ -87,8 +87,6 @@ final class BluetoothMonitor: ObservableObject {
     func startMonitoring() {
         guard !isMonitoring else { return }
         
-        print("[BluetoothMonitor] Starting keyboard activity monitoring...")
-        
         DispatchQueue.main.async {
             self.isMonitoring = true
             self.lastError = nil
@@ -102,8 +100,6 @@ final class BluetoothMonitor: ObservableObject {
     }
     
     func stopMonitoring() {
-        print("[BluetoothMonitor] Stopping keyboard activity monitoring...")
-        
         DispatchQueue.main.async {
             self.stopHIDMonitoring()
             self.isMonitoring = false
@@ -123,9 +119,7 @@ final class BluetoothMonitor: ObservableObject {
             var foundKeyboards: [BluetoothKeyboardInfo] = []
             
             // Method 1: Classic Bluetooth via IOBluetooth
-            print("[BluetoothMonitor] Scanning Classic Bluetooth...")
             if let devices = IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice] {
-                print("[BluetoothMonitor] Found \(devices.count) classic paired devices")
                 for device in devices {
                     let name = device.name ?? "Unknown"
                     let majorClass = device.deviceClassMajor
@@ -143,24 +137,17 @@ final class BluetoothMonitor: ObservableObject {
                             isBLE: false
                         )
                         foundKeyboards.append(info)
-                        print("[BluetoothMonitor] Added keyboard: \(name)")
                     }
                 }
             }
             
             // Method 2: BLE keyboards via system_profiler
-            print("[BluetoothMonitor] Scanning BLE devices via system_profiler...")
             let bleKeyboards = self.scanBLEKeyboardsViaSystemProfiler()
             
             for bleKeyboard in bleKeyboards {
                 if !foundKeyboards.contains(where: { $0.address == bleKeyboard.address || $0.name == bleKeyboard.name }) {
                     foundKeyboards.append(bleKeyboard)
                 }
-            }
-            
-            print("[BluetoothMonitor] Total keyboards found: \(foundKeyboards.count)")
-            for kb in foundKeyboards {
-                print("[BluetoothMonitor]   - \(kb.name) (\(kb.address)) connected: \(kb.isConnected)")
             }
             
             DispatchQueue.main.async {
@@ -181,7 +168,7 @@ final class BluetoothMonitor: ObservableObject {
         hidManager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
         
         guard let manager = hidManager else {
-            print("[BluetoothMonitor] Failed to create HID manager")
+            print("[BluetoothMonitor] ERROR: Failed to create HID manager")
             return
         }
         
@@ -208,9 +195,9 @@ final class BluetoothMonitor: ObservableObject {
         
         let result = IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
         if result == kIOReturnSuccess {
-            print("[BluetoothMonitor] HID monitoring started successfully")
+            print("[BluetoothMonitor] HID monitoring started")
         } else {
-            print("[BluetoothMonitor] Failed to open HID manager: \(result)")
+            print("[BluetoothMonitor] ERROR: Failed to open HID manager: \(result)")
         }
     }
     
@@ -220,30 +207,37 @@ final class BluetoothMonitor: ObservableObject {
         IOHIDManagerUnscheduleFromRunLoop(manager, CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue)
         IOHIDManagerClose(manager, IOOptionBits(kIOHIDOptionsTypeNone))
         hidManager = nil
-        
-        print("[BluetoothMonitor] HID monitoring stopped")
     }
     
     private func handleHIDInput(_ value: IOHIDValue) {
         let element = IOHIDValueGetElement(value)
         let device = IOHIDElementGetDevice(element)
         
-        guard let deviceName = getHIDDeviceProperty(device, key: kIOHIDProductKey) as? String else { return }
+        // Get device name
+        guard let deviceName = getHIDDeviceProperty(device, key: kIOHIDProductKey) as? String else {
+            return
+        }
         
         // Check if this is a keyboard we're tracking
-        guard isKeyboardByName(deviceName) else { return }
+        guard isKeyboardByName(deviceName) else {
+            return
+        }
         
         let now = Date()
         let lastActivity = lastKeyboardActivity[deviceName] ?? Date.distantPast
         let timeSinceLastActivity = now.timeIntervalSince(lastActivity)
         
         // Debounce: only process if more than 0.5 second since last activity for this keyboard
-        guard timeSinceLastActivity > 0.5 else { return }
+        guard timeSinceLastActivity > 0.5 else {
+            return
+        }
         
         lastKeyboardActivity[deviceName] = now
         
         // Find matching keyboard in paired list
-        guard let keyboard = findMatchingKeyboard(deviceName) else { return }
+        guard let keyboard = findMatchingKeyboard(deviceName) else {
+            return
+        }
         
         // Determine if we should send a switch event:
         // 1. Different keyboard than last active - always trigger
@@ -268,13 +262,11 @@ final class BluetoothMonitor: ObservableObject {
             
             if timeSinceLastSwitch >= switchEventCooldown {
                 shouldTrigger = true
-            } else {
-                print("[BluetoothMonitor] Reactivation detected but cooldown active (\(String(format: "%.1f", switchEventCooldown - timeSinceLastSwitch))s remaining), skipping")
             }
         }
         
         if shouldTrigger {
-            print("[BluetoothMonitor] KEYBOARD ACTIVE: \(keyboard.name) (different: \(isDifferentKeyboard), reactivation: \(isReactivation), gap: \(String(format: "%.1f", timeSinceLastActivity))s)")
+            print("[BluetoothMonitor] Keyboard active: \(keyboard.name)")
             
             // Update last switch event time for this keyboard
             lastSwitchEventTime[keyboard.id] = now
