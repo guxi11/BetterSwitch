@@ -71,6 +71,10 @@ final class BluetoothMonitor: ObservableObject {
     // This prevents repeated triggering while using the same keyboard
     private var lastSwitchEventTime: [String: Date] = [:]
     
+    // Health check timer to ensure HID monitoring stays active
+    private var healthCheckTimer: Timer?
+    private var lastHIDActivity: Date = Date()
+    
     // Minimum time between switch events for the same keyboard (in seconds)
     // This should be long enough that normal typing pauses don't trigger repeated switches,
     // but short enough that switching between devices still works quickly
@@ -80,6 +84,7 @@ final class BluetoothMonitor: ObservableObject {
     
     deinit {
         stopMonitoring()
+        healthCheckTimer?.invalidate()
     }
     
     // MARK: - Public Methods
@@ -96,11 +101,16 @@ final class BluetoothMonitor: ObservableObject {
             
             // Start HID monitoring
             self.startHIDMonitoring()
+            
+            // Start health check timer
+            self.startHealthCheckTimer()
         }
     }
     
     func stopMonitoring() {
         DispatchQueue.main.async {
+            self.healthCheckTimer?.invalidate()
+            self.healthCheckTimer = nil
             self.stopHIDMonitoring()
             self.isMonitoring = false
         }
@@ -209,14 +219,61 @@ final class BluetoothMonitor: ObservableObject {
         hidManager = nil
     }
     
+    // MARK: - Health Check
+    
+    private func startHealthCheckTimer() {
+        // Check every 60 seconds if HID monitoring is still working
+        healthCheckTimer = Timer.scheduledTimer(withTimeInterval: 60.0, repeats: true) { [weak self] _ in
+            self?.performHealthCheck()
+        }
+        // Make sure timer fires even when menu is open
+        RunLoop.main.add(healthCheckTimer!, forMode: .common)
+    }
+    
+    private func performHealthCheck() {
+        guard isMonitoring else { return }
+        
+        // Check if HID manager is still valid
+        if hidManager == nil {
+            print("[BluetoothMonitor] Health check: HID manager is nil, restarting...")
+            startHIDMonitoring()
+            return
+        }
+        
+        // Log health status
+        let timeSinceLastActivity = Date().timeIntervalSince(lastHIDActivity)
+        if timeSinceLastActivity > 300 { // 5 minutes without any HID activity
+            print("[BluetoothMonitor] Health check: No HID activity for \\(Int(timeSinceLastActivity))s, restarting HID monitoring...")
+            stopHIDMonitoring()
+            startHIDMonitoring()
+        }
+    }
+    
     private func handleHIDInput(_ value: IOHIDValue) {
         let element = IOHIDValueGetElement(value)
         let device = IOHIDElementGetDevice(element)
+        
+        // Update last HID activity for health check
+        lastHIDActivity = Date()
         
         // Get device name
         guard let deviceName = getHIDDeviceProperty(device, key: kIOHIDProductKey) as? String else {
             return
         }
+        
+        // Log all keyboard input for debugging (only when device looks like a keyboard)
+        // This helps diagnose why certain keyboards might not trigger switches
+        #if DEBUG
+        if deviceName.lowercased().contains("keyboard") || deviceName.lowercased().contains("kbd") {
+            // Only log occasionally to avoid spam
+            let now = Date()
+            let lastLog = lastKeyboardActivity["__debug_log__"] ?? Date.distantPast
+            if now.timeIntervalSince(lastLog) > 10.0 {
+                lastKeyboardActivity["__debug_log__"] = now
+                print("[BluetoothMonitor] HID input from: \(deviceName)")
+            }
+        }
+        #endif
         
         // Check if this is a keyboard we're tracking
         guard isKeyboardByName(deviceName) else {
@@ -298,6 +355,19 @@ final class BluetoothMonitor: ObservableObject {
             $0.name.lowercased().contains(lowercaseDeviceName) 
         }) {
             return keyboard
+        }
+        
+        // If no match found in paired list, create a temporary keyboard info
+        // This ensures HID-detected keyboards can still trigger switches
+        // even if they weren't found during Bluetooth scan
+        if isKeyboardByName(deviceName) {
+            return BluetoothKeyboardInfo(
+                id: deviceName,  // Use name as ID for HID-detected keyboards
+                name: deviceName,
+                address: "",
+                isConnected: true,
+                isBLE: false
+            )
         }
         
         return nil
