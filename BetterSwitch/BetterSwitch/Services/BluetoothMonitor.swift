@@ -20,7 +20,8 @@ struct BluetoothKeyboardInfo: Identifiable, Equatable, Sendable {
     }
 }
 
-/// Monitors global keyboard activity
+/// Monitors global keyboard activity using NSEvent global monitor
+/// This approach only requires Input Monitoring permission, NOT Accessibility.
 final class BluetoothMonitor: ObservableObject {
     
     /// Last active keyboard (most recently used)
@@ -36,34 +37,24 @@ final class BluetoothMonitor: ObservableObject {
     
     let keyboardBecameActivePublisher = PassthroughSubject<BluetoothKeyboardInfo, Never>()
     
-    // Global event monitor (CGEventTap)
-    private var eventTap: CFMachPort?
-    private var runLoopSource: CFRunLoopSource?
+    // NSEvent global monitor handle
+    private var globalMonitor: Any?
     private var lastKeyboardActivity: [String: Date] = [:]
     
     // Track when we last sent a switch event for each keyboard
-    // This prevents repeated triggering while using the same keyboard
     private var lastSwitchEventTime: [String: Date] = [:]
     
-    // Health check timer to ensure HID monitoring stays active
+    // Health check timer
     private var healthCheckTimer: Timer?
     private var lastHIDActivity: Date = Date()
     
-    // Keep a strong reference to self for the callback context
-    // This prevents the callback from accessing freed memory
-    private var retainedSelf: BluetoothMonitor?
-    
-    // Minimum time between switch events for the same keyboard (in seconds)
-    // This should be long enough that normal typing pauses don't trigger repeated switches,
-    // but short enough that switching between devices still works quickly
     private let switchEventCooldown: TimeInterval = 30.0
-    
-    // Logger reference
     private let logger = AppLogger.shared
     
     // Workspace and display observers
     private var workspaceObserver: NSObjectProtocol?
     private var screenParamsObserver: NSObjectProtocol?
+    private var restartWorkItem: DispatchWorkItem?
     
     init() {
         logger.info("BT", "BluetoothMonitor initialized")
@@ -82,8 +73,6 @@ final class BluetoothMonitor: ObservableObject {
         logger.info("BT", "BluetoothMonitor deinitialized")
     }
     
-    private var restartWorkItem: DispatchWorkItem?
-    
     // MARK: - Workspace Observers (Sleep/Wake handling)
     
     private func setupWorkspaceObserver() {
@@ -92,8 +81,8 @@ final class BluetoothMonitor: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.logger.info("System", "Mac woke from sleep. Restarting HID monitoring...")
-            self?.restartHIDMonitoringWithDelay()
+            self?.logger.info("System", "Mac woke from sleep. Restarting monitoring...")
+            self?.restartMonitoringWithDelay()
         }
         
         screenParamsObserver = NotificationCenter.default.addObserver(
@@ -101,27 +90,25 @@ final class BluetoothMonitor: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.logger.info("System", "Screen parameters changed (e.g. Monitor switched input). Restarting HID monitoring...")
-            self?.restartHIDMonitoringWithDelay()
+            self?.logger.info("System", "Screen parameters changed. Restarting monitoring...")
+            self?.restartMonitoringWithDelay()
         }
     }
     
-    private func restartHIDMonitoringWithDelay() {
-        if isMonitoring {
-            // Cancel any pending restart
-            restartWorkItem?.cancel()
-            
-            stopHIDMonitoring()
-            
-            // Create a new work item with a longer delay
-            let workItem = DispatchWorkItem { [weak self] in
-                self?.startHIDMonitoring()
-            }
-            restartWorkItem = workItem
-            
-            // 5 seconds delay to allow DDC/CI switch to complete and system to settle
-            DispatchQueue.main.asyncAfter(deadline: .now() + 5.0, execute: workItem)
+    private func restartMonitoringWithDelay() {
+        guard isMonitoring else { return }
+        
+        // Cancel any pending restart
+        restartWorkItem?.cancel()
+        
+        stopGlobalMonitor()
+        
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.startGlobalMonitor()
         }
+        restartWorkItem = workItem
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5.0, execute: workItem)
     }
     
     // MARK: - Public Methods
@@ -134,122 +121,53 @@ final class BluetoothMonitor: ObservableObject {
         
         logger.info("BT", "Starting monitoring...")
         
-        // Check and request accessibility permission
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
-        let trusted = AXIsProcessTrustedWithOptions(options)
-        logger.info("BT", "Accessibility trusted: \(trusted)")
+        isMonitoring = true
+        lastError = nil
         
-        DispatchQueue.main.async {
-            self.isMonitoring = true
-            self.lastError = nil
-            
-            // Retain self to prevent deallocation while HID callback is active
-            self.retainedSelf = self
-            
-            // Start Global Keyboard monitoring
-            self.startHIDMonitoring()
-            
-            // Start health check timer
-            self.startHealthCheckTimer()
-            
-            self.logger.info("BT", "Monitoring started successfully")
-        }
+        startGlobalMonitor()
+        startHealthCheckTimer()
+        
+        logger.info("BT", "Monitoring started successfully")
     }
     
     func stopMonitoring() {
         logger.info("BT", "Stopping monitoring...")
         
-        DispatchQueue.main.async {
-            self.healthCheckTimer?.invalidate()
-            self.healthCheckTimer = nil
-            self.stopHIDMonitoring()
-            self.isMonitoring = false
-            
-            // Release self reference
-            self.retainedSelf = nil
-            
-            self.logger.info("BT", "Monitoring stopped")
-        }
+        healthCheckTimer?.invalidate()
+        healthCheckTimer = nil
+        restartWorkItem?.cancel()
+        restartWorkItem = nil
+        stopGlobalMonitor()
+        isMonitoring = false
+        
+        logger.info("BT", "Monitoring stopped")
     }
     
-    // MARK: - Global Keyboard Monitoring (CGEventTap)
+    // MARK: - NSEvent Global Monitor (no Accessibility permission needed)
     
-    private func startHIDMonitoring() {
-        logger.info("HID", "Starting Global Keyboard monitoring via CGEventTap...")
-        
+    private func startGlobalMonitor() {
         // Stop existing monitor if any
-        stopHIDMonitoring()
+        stopGlobalMonitor()
         
-        let eventMask = (1 << CGEventType.keyDown.rawValue)
+        logger.info("HID", "Starting keyboard monitoring via NSEvent.addGlobalMonitorForEvents...")
         
-        // Use an unmanaged reference to pass self into the C-callback
-        let context = Unmanaged.passUnretained(self).toOpaque()
-        
-        // The callback function must not capture any context
-        let callback: CGEventTapCallBack = { (proxy, type, event, refcon) -> Unmanaged<CGEvent>? in
-            if let refcon = refcon {
-                let mySelf = Unmanaged<BluetoothMonitor>.fromOpaque(refcon).takeUnretainedValue()
-                
-                if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-                    mySelf.logger.warning("HID", "CGEventTap disabled by system, attempting to re-enable...")
-                    if let tap = mySelf.eventTap {
-                        CGEvent.tapEnable(tap: tap, enable: true)
-                    }
-                } else if type == .keyDown {
-                    mySelf.handleGlobalKeyEvent()
-                }
-            }
-            return Unmanaged.passRetained(event)
+        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            self?.handleGlobalKeyEvent()
         }
         
-        // Use .listenOnly instead of .defaultTap - macOS 26 restricts .defaultTap even with accessibility permission
-        eventTap = CGEvent.tapCreate(
-            tap: .cgSessionEventTap,
-            place: .headInsertEventTap,
-            options: .listenOnly,
-            eventsOfInterest: CGEventMask(eventMask),
-            callback: callback,
-            userInfo: context
-        )
-        
-        // Fallback: try .cghidEventTap if session tap fails
-        if eventTap == nil {
-            logger.warning("HID", "Session event tap failed, trying HID event tap...")
-            eventTap = CGEvent.tapCreate(
-                tap: .cghidEventTap,
-                place: .headInsertEventTap,
-                options: .listenOnly,
-                eventsOfInterest: CGEventMask(eventMask),
-                callback: callback,
-                userInfo: context
-            )
-        }
-        
-        guard let tap = eventTap else {
-            logger.error("HID", "Failed to create CGEventTap. Ensure Accessibility permissions are granted.")
-            return
-        }
-        
-        runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-        if let runLoopSource = runLoopSource {
-            CFRunLoopAddSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
-            CGEvent.tapEnable(tap: tap, enable: true)
-            logger.info("HID", "CGEventTap started successfully. Waiting for keystrokes...")
+        if globalMonitor != nil {
+            logger.info("HID", "NSEvent global monitor started successfully. Waiting for keystrokes...")
         } else {
-            logger.error("HID", "Failed to create CFRunLoopSource for CGEventTap.")
+            logger.error("HID", "Failed to create NSEvent global monitor. Check Input Monitoring permission in System Settings > Privacy & Security > Input Monitoring.")
+            lastError = "Failed to start keyboard monitoring. Grant Input Monitoring permission."
         }
     }
     
-    private func stopHIDMonitoring() {
-        if let runLoopSource = runLoopSource {
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
-            self.runLoopSource = nil
-        }
-        if let tap = eventTap {
-            logger.info("HID", "Stopping Global Keyboard monitoring (CGEventTap)...")
-            CGEvent.tapEnable(tap: tap, enable: false)
-            self.eventTap = nil
-            logger.info("HID", "Global Keyboard monitoring stopped")
+    private func stopGlobalMonitor() {
+        if let monitor = globalMonitor {
+            NSEvent.removeMonitor(monitor)
+            globalMonitor = nil
+            logger.info("HID", "NSEvent global monitor stopped")
         }
     }
     
@@ -258,11 +176,9 @@ final class BluetoothMonitor: ObservableObject {
     private func startHealthCheckTimer() {
         healthCheckTimer?.invalidate()
         
-        // Check every 30 seconds if HID monitoring is still working
         healthCheckTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] _ in
             self?.performHealthCheck()
         }
-        // Make sure timer fires even when menu is open
         if let timer = healthCheckTimer {
             RunLoop.main.add(timer, forMode: .common)
         }
@@ -275,36 +191,29 @@ final class BluetoothMonitor: ObservableObject {
         
         let timeSinceLastActivity = Date().timeIntervalSince(lastHIDActivity)
         
-        logger.debug("HID", "Health check: last activity \(Int(timeSinceLastActivity))s ago, monitor: \(eventTap != nil ? "active" : "nil")")
+        logger.debug("HID", "Health check: last activity \(Int(timeSinceLastActivity))s ago, monitor: \(globalMonitor != nil ? "active" : "nil")")
         
-        // Check if event monitor is still valid
-        if eventTap == nil {
-            logger.warning("HID", "Health check: Event tap is nil, restarting...")
-            startHIDMonitoring()
+        if globalMonitor == nil {
+            logger.warning("HID", "Health check: Global monitor is nil, restarting...")
+            startGlobalMonitor()
             return
         }
         
-        // If no activity for 5 minutes, restart HID monitoring
+        // If no activity for 5 minutes, restart monitoring
         if timeSinceLastActivity > 300 {
-            logger.warning("HID", "Health check: No HID activity for \(Int(timeSinceLastActivity))s, restarting...")
-            stopHIDMonitoring()
-            startHIDMonitoring()
+            logger.warning("HID", "Health check: No activity for \(Int(timeSinceLastActivity))s, restarting...")
+            stopGlobalMonitor()
+            startGlobalMonitor()
         }
     }
     
-    // MARK: - HID Callbacks
+    // MARK: - Event Handling
     
     private func handleGlobalKeyEvent() {
-        // Update last activity for health check
         lastHIDActivity = Date()
-        
-        // Record event for statistics
         AppLogger.shared.recordHIDEvent()
         
         let now = Date()
-        
-        // Since we can't identify the hardware source with NSEvent, 
-        // we treat all keyboard input as coming from a generic "Active Keyboard"
         let deviceName = "Global Keyboard"
         
         let lastActivity = lastKeyboardActivity[deviceName] ?? Date.distantPast
@@ -318,7 +227,6 @@ final class BluetoothMonitor: ObservableObject {
         lastKeyboardActivity[deviceName] = now
         logger.debug("HID", "Keystroke detected")
         
-        // We simulate a generic keyboard since we don't know the exact device
         let simulatedKeyboard = BluetoothKeyboardInfo(
             id: "global_keyboard",
             name: "Active Keyboard"
