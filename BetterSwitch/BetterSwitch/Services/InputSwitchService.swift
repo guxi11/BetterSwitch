@@ -27,6 +27,7 @@ final class InputSwitchService {
     private let bluetoothMonitor: BluetoothMonitor
     private let ddcManager: DDCManager
     private let modelContext: ModelContext
+    private let logger = AppLogger.shared
     
     private var cancellables = Set<AnyCancellable>()
     
@@ -46,6 +47,7 @@ final class InputSwitchService {
         self.ddcManager = ddcManager
         self.modelContext = modelContext
         
+        logger.info("Switch", "InputSwitchService initialized")
         setupSubscriptions()
     }
     
@@ -103,7 +105,10 @@ final class InputSwitchService {
     }
     
     private func handleKeyboardBecameActive(_ keyboard: BluetoothKeyboardInfo) {
+        logger.info("Switch", "Keyboard became active: \(keyboard.name) (id: \(keyboard.id))")
+        
         guard isEnabled else {
+            logger.warning("Switch", "Service disabled, skipping switch")
             return
         }
         
@@ -123,18 +128,27 @@ final class InputSwitchService {
     
     @MainActor
     private func performSwitch(for keyboardIdentifier: String) async {
+        logger.info("Switch", "Performing switch for keyboard: \(keyboardIdentifier)")
+        
         // Load simple mapping from UserDefaults
         guard let mapping = loadSimpleMapping() else {
             lastError = "未配置映射"
+            logger.error("Switch", "No mapping configured")
             return
         }
+        
+        logger.debug("Switch", "Mapping loaded: port code \(mapping.portCode)")
         
         // Check if the active keyboard matches the registered keyboard
         guard let registeredKeyboard = fetchRegisteredKeyboard() else {
+            logger.warning("Switch", "No registered keyboard found")
             return
         }
         
+        logger.debug("Switch", "Registered keyboard: \(registeredKeyboard.name) (id: \(registeredKeyboard.identifier))")
+        
         guard registeredKeyboard.identifier == keyboardIdentifier else {
+            logger.info("Switch", "Keyboard ID mismatch: registered=\(registeredKeyboard.identifier), active=\(keyboardIdentifier)")
             return
         }
         
@@ -142,13 +156,19 @@ final class InputSwitchService {
         let monitors = ddcManager.monitors
         guard !monitors.isEmpty else {
             lastError = "未检测到显示器"
+            logger.error("Switch", "No monitors detected")
             return
         }
+        
+        logger.info("Switch", "Switching \(monitors.count) monitor(s) to input \(mapping.portCode)")
         
         var anySuccess = false
         
         for monitor in monitors {
             let success = ddcManager.setInputSource(mapping.portCode, for: monitor.displayID)
+            
+            // Record switch attempt
+            AppLogger.shared.recordSwitchAttempt(success: success)
             
             let inputName = InputSource.allInputs.first { $0.code == mapping.portCode }?.name ?? "Input \(mapping.portCode)"
             
@@ -163,6 +183,7 @@ final class InputSwitchService {
             if success {
                 anySuccess = true
                 lastError = nil
+                logger.info("Switch", "Successfully switched \(monitor.name) to \(inputName)")
                 
                 // Post notification for UI updates
                 NotificationCenter.default.post(
@@ -184,11 +205,13 @@ final class InputSwitchService {
                 }
             } else {
                 lastError = "Failed to switch \(monitor.name) to \(inputName)"
+                logger.error("Switch", "Failed to switch \(monitor.name) to \(inputName)")
             }
         }
         
         if !anySuccess {
             lastError = "所有显示器切换失败"
+            logger.error("Switch", "All monitor switches failed")
         }
     }
     

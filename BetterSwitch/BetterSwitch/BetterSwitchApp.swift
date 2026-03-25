@@ -19,10 +19,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var modelContainer: ModelContainer!
     
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // 测试日志系统
+        print("=== App launching, testing logger ===")
+        print("Logger entries count before: \(AppLogger.shared.entries.count)")
+        
+        AppLogger.shared.info("App", "=== BetterSwitch Starting ===")
+        AppLogger.shared.info("App", "Test log 1")
+        AppLogger.shared.info("App", "Test log 2")
+        AppLogger.shared.debug("App", "Debug test")
+        
+        print("Logger entries count after: \(AppLogger.shared.entries.count)")
+        for entry in AppLogger.shared.entries {
+            print("  Entry: [\(entry.category)] \(entry.message)")
+        }
+        
         initializeServices()
     }
     
     @MainActor func initializeServices() {
+        AppLogger.shared.info("App", "Initializing services...")
+        
         // Create model container
         let schema = Schema([
             BluetoothKeyboard.self,
@@ -33,6 +49,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         do {
             modelContainer = try ModelContainer(for: schema, configurations: [modelConfiguration])
+            AppLogger.shared.info("App", "Model container created")
         } catch {
             fatalError("Could not create ModelContainer: \(error)")
         }
@@ -42,11 +59,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         ddcManager = DDCManager()
         bluetoothMonitor = BluetoothMonitor()
         
+        AppLogger.shared.info("App", "Managers initialized")
+        
         // Wire up AppState to DDCManager
         appState.ddcManager = ddcManager
         
         // Enumerate displays
         ddcManager.enumerateDisplays()
+        AppLogger.shared.info("App", "Found \(ddcManager.monitors.count) monitor(s)")
         
         // Update app state with detected monitors
         for displayInfo in ddcManager.monitors {
@@ -69,6 +89,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Start the input switch service (this also starts bluetooth monitoring)
         inputSwitchService.start()
         
+        AppLogger.shared.info("App", "Services started successfully")
         print("[BetterSwitch] Started with \(ddcManager.monitors.count) monitor(s)")
     }
 }

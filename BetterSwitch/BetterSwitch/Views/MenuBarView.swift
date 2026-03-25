@@ -15,6 +15,8 @@ struct MenuBarView: View {
     // Use customPorts from AppStorage to match Settings page
     @AppStorage("customPorts") private var customPortsData: Data = Data()
     
+    @State private var showLogWindow = false
+    
     private var ports: [EditablePort] {
         if let decoded = try? JSONDecoder().decode([EditablePort].self, from: customPortsData),
            !decoded.isEmpty {
@@ -39,6 +41,11 @@ struct MenuBarView: View {
         }
         .keyboardShortcut(",", modifiers: .command)
         
+        Button("View Logs...") {
+            openLogWindow()
+        }
+        .keyboardShortcut("l", modifiers: .command)
+        
         Button("Quit") {
             NSApplication.shared.terminate(nil)
         }
@@ -55,6 +62,25 @@ struct MenuBarView: View {
         for monitor in ddcManager.monitors {
             _ = ddcManager.setInputSource(code, for: monitor.displayID)
         }
+    }
+    
+    private func openLogWindow() {
+        // Create a new window for logs
+        let logWindow = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 650, height: 500),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        logWindow.title = "BetterSwitch Logs"
+        logWindow.center()
+        logWindow.isReleasedWhenClosed = false
+        
+        // Render the extremely simple LogView directly without complex environment injections
+        logWindow.contentView = NSHostingView(rootView: LogView())
+        
+        logWindow.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 }
 
