@@ -8,6 +8,8 @@
     <true/>
     <key>com.apple.security.input-monitoring</key>
     <true/>
+    <key>com.apple.security.temporary-exception.accessibility</key>
+    <true/>
     <key>com.apple.security.temporary-exception.apple-events</key>
     <array>
         <string>com.apple.systemevents</string>

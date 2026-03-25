@@ -8,6 +8,8 @@
     <string>BetterSwitch needs Bluetooth access to detect when your keyboard connects and automatically switch monitor inputs.</string>
     <key>NSInputMonitoringUsageDescription</key>
     <string>BetterSwitch needs input monitoring access to detect keyboard activity and switch monitor inputs automatically.</string>
+    <key>NSAccessibilityUsageDescription</key>
+    <string>BetterSwitch needs accessibility access to monitor global keyboard events and automatically switch monitor inputs when your keyboard connects.</string>
     <key>LSUIElement</key>
     <true/>
 </dict>
