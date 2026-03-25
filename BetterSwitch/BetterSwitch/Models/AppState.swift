@@ -12,8 +12,8 @@ import CoreGraphics
 /// Observable app state for runtime data
 @Observable
 final class AppState {
-    /// Currently connected Bluetooth keyboard (if any)
-    var connectedKeyboard: BluetoothKeyboard?
+    // Reference to connected global keyboard state (optional)
+    var isKeyboardActive: Bool = false
     
     /// Whether automatic input switching is enabled
     var isEnabled: Bool = true

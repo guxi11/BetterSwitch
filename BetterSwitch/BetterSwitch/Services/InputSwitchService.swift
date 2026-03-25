@@ -65,10 +65,10 @@ final class InputSwitchService {
         bluetoothMonitor.stopMonitoring()
     }
     
-    /// Manually trigger input switch for a keyboard
-    func triggerSwitch(for keyboardIdentifier: String) {
+    /// Manually trigger input switch (ignores keyboard ID)
+    func triggerSwitch(for keyboardIdentifier: String? = nil) {
         Task { @MainActor in
-            await performSwitch(for: keyboardIdentifier)
+            await performSwitch()
         }
     }
     
@@ -82,22 +82,6 @@ final class InputSwitchService {
                 self?.handleKeyboardBecameActive(keyboard)
             }
             .store(in: &cancellables)
-        
-        // Subscribe to keyboard connection events
-        bluetoothMonitor.keyboardConnectedPublisher
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] keyboard in
-                self?.handleKeyboardConnected(keyboard)
-            }
-            .store(in: &cancellables)
-        
-        // Subscribe to keyboard disconnection events
-        bluetoothMonitor.keyboardDisconnectedPublisher
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] keyboard in
-                self?.handleKeyboardDisconnected(keyboard)
-            }
-            .store(in: &cancellables)
     }
     
     private func loadSettings() {
@@ -105,7 +89,7 @@ final class InputSwitchService {
     }
     
     private func handleKeyboardBecameActive(_ keyboard: BluetoothKeyboardInfo) {
-        logger.info("Switch", "Keyboard became active: \(keyboard.name) (id: \(keyboard.id))")
+        logger.info("Switch", "Keyboard became active (Global Input detected)")
         
         guard isEnabled else {
             logger.warning("Switch", "Service disabled, skipping switch")
@@ -114,21 +98,14 @@ final class InputSwitchService {
         
         // Perform switch immediately (no delay)
         Task { @MainActor in
-            await performSwitch(for: keyboard.id)
+            await performSwitch()
         }
     }
     
-    private func handleKeyboardConnected(_ keyboard: BluetoothKeyboardInfo) {
-        // Connection events are handled but activity-based switching is preferred
-    }
-    
-    private func handleKeyboardDisconnected(_ keyboard: BluetoothKeyboardInfo) {
-        // Optionally: could implement "switch back" on disconnect
-    }
-    
     @MainActor
-    private func performSwitch(for keyboardIdentifier: String) async {
-        logger.info("Switch", "Performing switch for keyboard: \(keyboardIdentifier)")
+    private func performSwitch() async {
+        // Enumerate displays just in case they changed
+        ddcManager.enumerateDisplays()
         
         // Load simple mapping from UserDefaults
         guard let mapping = loadSimpleMapping() else {
@@ -138,19 +115,6 @@ final class InputSwitchService {
         }
         
         logger.debug("Switch", "Mapping loaded: port code \(mapping.portCode)")
-        
-        // Check if the active keyboard matches the registered keyboard
-        guard let registeredKeyboard = fetchRegisteredKeyboard() else {
-            logger.warning("Switch", "No registered keyboard found")
-            return
-        }
-        
-        logger.debug("Switch", "Registered keyboard: \(registeredKeyboard.name) (id: \(registeredKeyboard.identifier))")
-        
-        guard registeredKeyboard.identifier == keyboardIdentifier else {
-            logger.info("Switch", "Keyboard ID mismatch: registered=\(registeredKeyboard.identifier), active=\(keyboardIdentifier)")
-            return
-        }
         
         // Get all monitors
         let monitors = ddcManager.monitors
@@ -173,7 +137,7 @@ final class InputSwitchService {
             let inputName = InputSource.allInputs.first { $0.code == mapping.portCode }?.name ?? "Input \(mapping.portCode)"
             
             lastAction = SwitchAction(
-                keyboard: registeredKeyboard.name,
+                keyboard: "Active Keyboard",
                 monitor: monitor.name,
                 input: inputName,
                 timestamp: Date(),
@@ -190,7 +154,7 @@ final class InputSwitchService {
                     name: .inputSwitchPerformed,
                     object: self,
                     userInfo: [
-                        "keyboard": registeredKeyboard.name,
+                        "keyboard": "Active Keyboard",
                         "monitor": monitor.name,
                         "input": inputName
                     ]
@@ -223,43 +187,12 @@ final class InputSwitchService {
         return mapping
     }
     
-    private func fetchRegisteredKeyboard() -> BluetoothKeyboard? {
-        let descriptor = FetchDescriptor<BluetoothKeyboard>()
-        return try? modelContext.fetch(descriptor).first
-    }
-    
     private func showNotification(title: String, body: String) {
         // Use UserNotifications framework for system notifications
         // This is a simplified implementation
         #if DEBUG
         print("Notification: \(title) - \(body)")
         #endif
-    }
-    
-    /// Register a new keyboard from BluetoothKeyboardInfo
-    func registerKeyboard(_ info: BluetoothKeyboardInfo) -> BluetoothKeyboard {
-        // Check if keyboard already exists
-        let identifier = info.id
-        let descriptor = FetchDescriptor<BluetoothKeyboard>(
-            predicate: #Predicate { $0.identifier == identifier }
-        )
-        
-        if let existing = try? modelContext.fetch(descriptor).first {
-            // Update last seen
-            existing.lastSeen = Date()
-            return existing
-        }
-        
-        // Create new keyboard entry
-        let keyboard = BluetoothKeyboard(
-            identifier: identifier,
-            name: info.name,
-            isTracked: true,
-            lastSeen: Date()
-        )
-        modelContext.insert(keyboard)
-        
-        return keyboard
     }
 }
 

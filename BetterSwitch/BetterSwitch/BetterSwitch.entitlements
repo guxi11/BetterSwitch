@@ -4,5 +4,13 @@
 <dict>
     <key>com.apple.security.app-sandbox</key>
     <false/>
+    <key>com.apple.security.device.usb</key>
+    <true/>
+    <key>com.apple.security.input-monitoring</key>
+    <true/>
+    <key>com.apple.security.temporary-exception.apple-events</key>
+    <array>
+        <string>com.apple.systemevents</string>
+    </array>
 </dict>
 </plist>

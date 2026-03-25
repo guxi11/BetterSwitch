@@ -217,55 +217,42 @@ final class DDCManager {
         return nil
     }
     
-    // MARK: - m1ddc via AppleScript
+    // MARK: - m1ddc Execution
     
     private func runM1DDCViaAppleScript(displayIndex: Int, inputCode: UInt8) -> Bool {
-        // Use AppleScript's "do shell script" which runs in a different security context
-        let script = """
-        do shell script "/opt/homebrew/bin/m1ddc set input \(inputCode) -d \(displayIndex)"
-        """
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/m1ddc")
+        process.arguments = ["set", "input", String(inputCode), "-d", String(displayIndex)]
         
-        print("[DDCManager] Running AppleScript: \(script)")
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
         
-        var error: NSDictionary?
-        if let appleScript = NSAppleScript(source: script) {
-            let result = appleScript.executeAndReturnError(&error)
+        do {
+            print("[DDCManager] Running m1ddc: set input \(inputCode) -d \(displayIndex)")
+            try process.run()
+            process.waitUntilExit()
             
-            if let error = error {
-                print("[DDCManager] AppleScript error: \(error)")
-                
-                // Try alternative path
-                return runM1DDCViaAppleScriptAlt(displayIndex: displayIndex, inputCode: inputCode)
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            if let output = String(data: data, encoding: .utf8), !output.isEmpty {
+                print("[DDCManager] m1ddc output: \(output.trimmingCharacters(in: .whitespacesAndNewlines))")
             }
             
-            print("[DDCManager] AppleScript result: \(result.stringValue ?? "ok")")
-            return true
+            let exitCode = process.terminationStatus
+            if exitCode == 0 {
+                print("[DDCManager] m1ddc succeeded (exit code 0)")
+                return true
+            } else {
+                print("[DDCManager] m1ddc failed (exit code \(exitCode))")
+                return false
+            }
+        } catch {
+            print("[DDCManager] Failed to execute m1ddc: \(error)")
+            return false
         }
-        
-        return false
     }
     
     private func runM1DDCViaAppleScriptAlt(displayIndex: Int, inputCode: UInt8) -> Bool {
-        // Try with explicit PATH
-        let script = """
-        do shell script "export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH; m1ddc set input \(inputCode) -d \(displayIndex)"
-        """
-        
-        print("[DDCManager] Running AppleScript (alt): \(script)")
-        
-        var error: NSDictionary?
-        if let appleScript = NSAppleScript(source: script) {
-            let result = appleScript.executeAndReturnError(&error)
-            
-            if let error = error {
-                print("[DDCManager] AppleScript (alt) error: \(error)")
-                return false
-            }
-            
-            print("[DDCManager] AppleScript (alt) result: \(result.stringValue ?? "ok")")
-            return true
-        }
-        
         return false
     }
     

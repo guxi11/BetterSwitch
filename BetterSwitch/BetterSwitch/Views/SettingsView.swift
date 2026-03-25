@@ -13,7 +13,6 @@ struct SettingsView: View {
     @Environment(DDCManager.self) private var ddcManager
     @EnvironmentObject private var bluetoothMonitor: BluetoothMonitor
     
-    @Query private var keyboards: [BluetoothKeyboard]
     @Query private var monitors: [Monitor]
     
     // 选中的端口
@@ -51,18 +50,6 @@ struct SettingsView: View {
                         editingDDCValue = String(port.code)
                     }
                 )
-                
-                // 连接线
-                ConnectionLine()
-                
-                // 键盘区域
-                KeyboardSection(
-                    keyboard: keyboards.first,
-                    detectedKeyboards: bluetoothMonitor.pairedKeyboards,
-                    isScanning: bluetoothMonitor.isScanning,
-                    onScan: { bluetoothMonitor.scanForKeyboards() },
-                    onSelect: selectKeyboard
-                )
             }
             .padding(.horizontal, 24)
             .padding(.top, 32)
@@ -72,18 +59,10 @@ struct SettingsView: View {
             
             // 底部状态栏
             HStack {
-                if let keyboard = keyboards.first {
-                    Image(systemName: "keyboard")
-                        .foregroundStyle(.green)
-                    Text(keyboard.name)
-                        .font(.caption)
-                } else {
-                    Image(systemName: "keyboard")
-                        .foregroundStyle(.secondary)
-                    Text("未选择键盘")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                Image(systemName: "keyboard")
+                    .foregroundStyle(.green)
+                Text("全局键盘监听中")
+                    .font(.caption)
                 
                 Spacer()
                 
@@ -150,22 +129,6 @@ struct SettingsView: View {
         for monitor in ddcManager.monitors {
             _ = ddcManager.setInputSource(code, for: monitor.displayID)
         }
-    }
-    
-    private func selectKeyboard(_ info: BluetoothKeyboardInfo) {
-        // 先删除所有已有键盘
-        for keyboard in keyboards {
-            modelContext.delete(keyboard)
-        }
-        // 添加新选择的键盘
-        let keyboard = BluetoothKeyboard(
-            identifier: info.id,
-            name: info.name,
-            isTracked: true,
-            lastSeen: Date()
-        )
-        modelContext.insert(keyboard)
-        saveMapping()
     }
     
     // MARK: - Persistence
@@ -425,173 +388,10 @@ struct EditDDCSheet: View {
         }
     }
 }
-
-// MARK: - Keyboard Section
-
-struct KeyboardSection: View {
-    let keyboard: BluetoothKeyboard?
-    let detectedKeyboards: [BluetoothKeyboardInfo]
-    let isScanning: Bool
-    let onScan: () -> Void
-    let onSelect: (BluetoothKeyboardInfo) -> Void
-    
-    @State private var showKeyboardPicker = false
-    
-    var body: some View {
-        VStack(spacing: 12) {
-            // 键盘图标
-            ZStack {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color(nsColor: .controlBackgroundColor))
-                    .frame(width: 140, height: 50)
-                    .shadow(color: .black.opacity(0.1), radius: 2, y: 1)
-                
-                if keyboard == nil {
-                    // 未选择状态
-                    HStack(spacing: 8) {
-                        Image(systemName: "keyboard")
-                            .font(.title2)
-                            .foregroundStyle(.secondary)
-                        
-                        if isScanning {
-                            ProgressView()
-                                .scaleEffect(0.6)
-                        }
-                    }
-                } else {
-                    // 已选择状态
-                    HStack(spacing: 4) {
-                        // 模拟键盘按键
-                        ForEach(0..<6, id: \.self) { row in
-                            VStack(spacing: 2) {
-                                ForEach(0..<3, id: \.self) { _ in
-                                    RoundedRectangle(cornerRadius: 2)
-                                        .fill(Color(nsColor: .tertiaryLabelColor))
-                                        .frame(width: 8, height: 8)
-                                }
-                            }
-                        }
-                    }
-                    .padding(.horizontal, 8)
-                }
-            }
-            .onTapGesture {
-                if keyboard == nil {
-                    if detectedKeyboards.isEmpty {
-                        onScan()
-                    } else {
-                        showKeyboardPicker = true
-                    }
-                } else {
-                    showKeyboardPicker = true
-                }
-            }
-            
-            // 标签
-            if let keyboard = keyboard {
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(Color.green)
-                        .frame(width: 6, height: 6)
-                    Text(keyboard.name)
-                        .font(.caption)
-                        .foregroundStyle(.primary)
-                }
-            } else {
-                VStack(spacing: 4) {
-                    Text("未选择键盘")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text("点击检测或选择")
-                        .font(.caption2)
-                        .foregroundStyle(.blue)
-                }
-            }
-        }
-        .popover(isPresented: $showKeyboardPicker) {
-            KeyboardPickerPopover(
-                detectedKeyboards: detectedKeyboards,
-                isScanning: isScanning,
-                onScan: onScan,
-                onSelect: { info in
-                    onSelect(info)
-                    showKeyboardPicker = false
-                }
-            )
-        }
-    }
-}
-
-struct KeyboardPickerPopover: View {
-    let detectedKeyboards: [BluetoothKeyboardInfo]
-    let isScanning: Bool
-    let onScan: () -> Void
-    let onSelect: (BluetoothKeyboardInfo) -> Void
-    
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("选择键盘")
-                    .font(.headline)
-                Spacer()
-                Button(action: onScan) {
-                    if isScanning {
-                        ProgressView()
-                            .scaleEffect(0.6)
-                    } else {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                }
-                .buttonStyle(.plain)
-                .disabled(isScanning)
-            }
-            
-            Divider()
-            
-            if detectedKeyboards.isEmpty {
-                Text("未检测到蓝牙键盘")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.vertical, 8)
-            } else {
-                ForEach(detectedKeyboards) { keyboard in
-                    Button(action: { onSelect(keyboard) }) {
-                        HStack {
-                            Image(systemName: "keyboard")
-                            VStack(alignment: .leading) {
-                                Text(keyboard.name)
-                                    .font(.body)
-                                Text(keyboard.address)
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            if keyboard.isConnected {
-                                Circle()
-                                    .fill(Color.green)
-                                    .frame(width: 8, height: 8)
-                            }
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.vertical, 4)
-                }
-            }
-            
-            Text("仅能选择一个键盘")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-        }
-        .padding()
-        .frame(width: 250)
-    }
-}
-
 #Preview {
     SettingsView()
         .environment(AppState())
         .environment(DDCManager())
         .environmentObject(BluetoothMonitor())
-        .modelContainer(for: [BluetoothKeyboard.self, Monitor.self, InputMapping.self], inMemory: true)
+        .modelContainer(for: [Monitor.self], inMemory: true)
 }

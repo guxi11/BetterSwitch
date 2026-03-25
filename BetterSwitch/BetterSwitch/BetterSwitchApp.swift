@@ -8,7 +8,6 @@
 import SwiftUI
 import SwiftData
 import Combine
-import IOBluetooth
 
 // App Delegate to handle app lifecycle
 class AppDelegate: NSObject, NSApplicationDelegate {
@@ -41,9 +40,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         // Create model container
         let schema = Schema([
-            BluetoothKeyboard.self,
-            Monitor.self,
-            InputMapping.self,
+            Monitor.self
         ])
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
         
@@ -120,9 +117,7 @@ struct BetterSwitchApp: App {
     
     private func createFallbackContainer() -> ModelContainer {
         let schema = Schema([
-            BluetoothKeyboard.self,
-            Monitor.self,
-            InputMapping.self,
+            Monitor.self
         ])
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
         return try! ModelContainer(for: schema, configurations: [modelConfiguration])

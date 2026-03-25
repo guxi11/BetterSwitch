@@ -19,9 +19,6 @@ final class Monitor {
     var supportsDDC: Bool
     var availableInputs: [InputSource]
     
-    @Relationship(deleteRule: .cascade, inverse: \InputMapping.monitor)
-    var mappings: [InputMapping]?
-    
     init(displayID: UInt32, name: String, vendorID: UInt32? = nil, productID: UInt32? = nil, serialNumber: String? = nil, supportsDDC: Bool = true, availableInputs: [InputSource] = InputSource.commonInputs) {
         self.displayID = displayID
         self.name = name

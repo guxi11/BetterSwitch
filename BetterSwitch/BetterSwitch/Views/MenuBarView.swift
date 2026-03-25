@@ -17,13 +17,13 @@ struct MenuBarView: View {
     
     @State private var showLogWindow = false
     
-    private var ports: [EditablePort] {
+    // Calculate display ports
+    private var ports: [InputSource] {
         if let decoded = try? JSONDecoder().decode([EditablePort].self, from: customPortsData),
            !decoded.isEmpty {
-            return decoded
+            return decoded.map { InputSource(code: $0.code, name: $0.name) }
         }
-        // Fallback to default ports
-        return InputSource.commonInputs.map { EditablePort(code: $0.code, name: $0.name) }
+        return InputSource.commonInputs
     }
     
     var body: some View {

@@ -6,37 +6,22 @@
 //
 
 import Foundation
-import IOBluetooth
 import Combine
-import IOKit
-import IOKit.hid
 import AppKit
 
 /// Simple struct to hold keyboard info (thread-safe)
 struct BluetoothKeyboardInfo: Identifiable, Equatable, Sendable {
     let id: String
     let name: String
-    let address: String
-    let isConnected: Bool
-    let isBLE: Bool
     
-    init(id: String, name: String, address: String, isConnected: Bool, isBLE: Bool = false) {
+    init(id: String, name: String) {
         self.id = id
         self.name = name
-        self.address = address
-        self.isConnected = isConnected
-        self.isBLE = isBLE
     }
 }
 
-/// Monitors Bluetooth keyboard connections and activity
-/// Supports both Classic Bluetooth and BLE keyboards
+/// Monitors global keyboard activity
 final class BluetoothMonitor: ObservableObject {
-    /// Currently connected keyboards
-    @Published private(set) var connectedKeyboards: [BluetoothKeyboardInfo] = []
-    
-    /// All paired keyboards
-    @Published private(set) var pairedKeyboards: [BluetoothKeyboardInfo] = []
     
     /// Last active keyboard (most recently used)
     @Published private(set) var lastActiveKeyboard: BluetoothKeyboardInfo?
@@ -47,25 +32,13 @@ final class BluetoothMonitor: ObservableObject {
     /// Whether monitoring is active
     @Published private(set) var isMonitoring: Bool = false
     
-    /// Whether a scan is in progress
-    @Published private(set) var isScanning: Bool = false
-    
     // MARK: - Publishers
     
-    let keyboardConnectedPublisher = PassthroughSubject<BluetoothKeyboardInfo, Never>()
-    let keyboardDisconnectedPublisher = PassthroughSubject<BluetoothKeyboardInfo, Never>()
     let keyboardBecameActivePublisher = PassthroughSubject<BluetoothKeyboardInfo, Never>()
     
-    // MARK: - Bluetooth Device Class Constants (Classic)
-    
-    private let kPeripheralMajorClass: UInt32 = 0x05
-    private let kKeyboardMinorClass: UInt32 = 0x40
-    
-    // Known keyboard name patterns
-    private let keyboardNamePatterns = ["keyboard", "kbd", "crkbd", "corne", "keeb", "ergodox", "planck", "preonic", "lily58", "sofle", "kyria"]
-    
-    // HID Manager for keyboard activity monitoring
-    private var hidManager: IOHIDManager?
+    // Global event monitor (CGEventTap)
+    private var eventTap: CFMachPort?
+    private var runLoopSource: CFRunLoopSource?
     private var lastKeyboardActivity: [String: Date] = [:]
     
     // Track when we last sent a switch event for each keyboard
@@ -88,8 +61,9 @@ final class BluetoothMonitor: ObservableObject {
     // Logger reference
     private let logger = AppLogger.shared
     
-    // Workspace observers
+    // Workspace and display observers
     private var workspaceObserver: NSObjectProtocol?
+    private var screenParamsObserver: NSObjectProtocol?
     
     init() {
         logger.info("BT", "BluetoothMonitor initialized")
@@ -99,11 +73,16 @@ final class BluetoothMonitor: ObservableObject {
     deinit {
         stopMonitoring()
         healthCheckTimer?.invalidate()
-        if let observer = workspaceObserver {
-            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+        if let wObserver = workspaceObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(wObserver)
+        }
+        if let sObserver = screenParamsObserver {
+            NotificationCenter.default.removeObserver(sObserver)
         }
         logger.info("BT", "BluetoothMonitor deinitialized")
     }
+    
+    private var restartWorkItem: DispatchWorkItem?
     
     // MARK: - Workspace Observers (Sleep/Wake handling)
     
@@ -114,15 +93,34 @@ final class BluetoothMonitor: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             self?.logger.info("System", "Mac woke from sleep. Restarting HID monitoring...")
-            // When Mac wakes up, Bluetooth devices take a moment to reconnect
-            // We restart immediately, and the health check will handle any subsequent issues
-            if self?.isMonitoring == true {
-                self?.stopHIDMonitoring()
-                // Small delay to let system settle
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                    self?.startHIDMonitoring()
-                }
+            self?.restartHIDMonitoringWithDelay()
+        }
+        
+        screenParamsObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.logger.info("System", "Screen parameters changed (e.g. Monitor switched input). Restarting HID monitoring...")
+            self?.restartHIDMonitoringWithDelay()
+        }
+    }
+    
+    private func restartHIDMonitoringWithDelay() {
+        if isMonitoring {
+            // Cancel any pending restart
+            restartWorkItem?.cancel()
+            
+            stopHIDMonitoring()
+            
+            // Create a new work item with a longer delay
+            let workItem = DispatchWorkItem { [weak self] in
+                self?.startHIDMonitoring()
             }
+            restartWorkItem = workItem
+            
+            // 5 seconds delay to allow DDC/CI switch to complete and system to settle
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5.0, execute: workItem)
         }
     }
     
@@ -143,10 +141,7 @@ final class BluetoothMonitor: ObservableObject {
             // Retain self to prevent deallocation while HID callback is active
             self.retainedSelf = self
             
-            // Initial scan
-            self.scanForKeyboards()
-            
-            // Start HID monitoring
+            // Start Global Keyboard monitoring
             self.startHIDMonitoring()
             
             // Start health check timer
@@ -172,174 +167,71 @@ final class BluetoothMonitor: ObservableObject {
         }
     }
     
-    /// Scan for paired keyboards (both Classic and BLE)
-    func scanForKeyboards() {
-        logger.info("BT", "Scanning for keyboards...")
-        
-        DispatchQueue.main.async {
-            self.isScanning = true
-            self.lastError = nil
-        }
-        
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self = self else { return }
-            
-            var foundKeyboards: [BluetoothKeyboardInfo] = []
-            
-            // Method 1: Classic Bluetooth via IOBluetooth
-            if let devices = IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice] {
-                self.logger.debug("BT", "Found \(devices.count) paired Bluetooth devices")
-                
-                for device in devices {
-                    let name = device.name ?? "Unknown"
-                    let majorClass = device.deviceClassMajor
-                    let minorClass = device.deviceClassMinor
-                    
-                    let isKeyboardByClass = majorClass == self.kPeripheralMajorClass && (minorClass & self.kKeyboardMinorClass) != 0
-                    let isKeyboardByName = self.isKeyboardByName(name)
-                    
-                    if isKeyboardByClass || isKeyboardByName {
-                        let info = BluetoothKeyboardInfo(
-                            id: device.addressString ?? UUID().uuidString,
-                            name: name,
-                            address: device.addressString ?? "",
-                            isConnected: device.isConnected(),
-                            isBLE: false
-                        )
-                        foundKeyboards.append(info)
-                        self.logger.debug("BT", "Found keyboard: \(name) (connected: \(device.isConnected()))")
-                    }
-                }
-            }
-            
-            // Method 2: BLE keyboards via system_profiler
-            let bleKeyboards = self.scanBLEKeyboardsViaSystemProfiler()
-            self.logger.debug("BT", "Found \(bleKeyboards.count) BLE keyboards")
-            
-            for bleKeyboard in bleKeyboards {
-                if !foundKeyboards.contains(where: { $0.address == bleKeyboard.address || $0.name == bleKeyboard.name }) {
-                    foundKeyboards.append(bleKeyboard)
-                }
-            }
-            
-            DispatchQueue.main.async {
-                self.pairedKeyboards = foundKeyboards
-                self.connectedKeyboards = foundKeyboards.filter { $0.isConnected }
-                self.isScanning = false
-                
-                self.logger.info("BT", "Scan complete: \(foundKeyboards.count) keyboards found")
-                
-                if foundKeyboards.isEmpty {
-                    self.lastError = "No keyboards found"
-                    self.logger.warning("BT", "No keyboards found during scan")
-                }
-            }
-        }
-    }
-    
-    // MARK: - HID Monitoring
+    // MARK: - Global Keyboard Monitoring (CGEventTap)
     
     private func startHIDMonitoring() {
-        logger.info("HID", "Starting HID monitoring...")
+        logger.info("HID", "Starting Global Keyboard monitoring via CGEventTap...")
         
-        // Stop existing manager if any
-        if hidManager != nil {
-            stopHIDMonitoring()
+        // Stop existing monitor if any
+        stopHIDMonitoring()
+        
+        let eventMask = (1 << CGEventType.keyDown.rawValue)
+        
+        // Use an unmanaged reference to pass self into the C-callback
+        let context = Unmanaged.passUnretained(self).toOpaque()
+        
+        // The callback function must not capture any context
+        let callback: CGEventTapCallBack = { (proxy, type, event, refcon) -> Unmanaged<CGEvent>? in
+            if let refcon = refcon {
+                let mySelf = Unmanaged<BluetoothMonitor>.fromOpaque(refcon).takeUnretainedValue()
+                
+                if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+                    mySelf.logger.warning("HID", "CGEventTap disabled by system, attempting to re-enable...")
+                    if let tap = mySelf.eventTap {
+                        CGEvent.tapEnable(tap: tap, enable: true)
+                    }
+                } else if type == .keyDown {
+                    mySelf.handleGlobalKeyEvent()
+                }
+            }
+            return Unmanaged.passRetained(event)
         }
         
-        hidManager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
+        eventTap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap,
+            options: .defaultTap,
+            eventsOfInterest: CGEventMask(eventMask),
+            callback: callback,
+            userInfo: context
+        )
         
-        guard let manager = hidManager else {
-            logger.error("HID", "Failed to create HID manager - this should not happen")
+        guard let tap = eventTap else {
+            logger.error("HID", "Failed to create CGEventTap. Ensure Accessibility permissions are granted.")
             return
         }
         
-        // Match ALL HID devices first to see what's available
-        // Then filter in the callback
-        IOHIDManagerSetDeviceMatching(manager, nil)
-        
-        // Set up callbacks using a static function to avoid retain cycle issues
-        let context = Unmanaged.passUnretained(self).toOpaque()
-        
-        // Device added callback
-        IOHIDManagerRegisterDeviceMatchingCallback(manager, { context, result, sender, device in
-            guard let context = context else { return }
-            let monitor = Unmanaged<BluetoothMonitor>.fromOpaque(context).takeUnretainedValue()
-            monitor.handleDeviceAdded(device)
-        }, context)
-        
-        // Device removed callback
-        IOHIDManagerRegisterDeviceRemovalCallback(manager, { context, result, sender, device in
-            guard let context = context else { return }
-            let monitor = Unmanaged<BluetoothMonitor>.fromOpaque(context).takeUnretainedValue()
-            monitor.handleDeviceRemoved(device)
-        }, context)
-        
-        // Input value callback
-        IOHIDManagerRegisterInputValueCallback(manager, { context, result, sender, value in
-            guard let context = context else { return }
-            let monitor = Unmanaged<BluetoothMonitor>.fromOpaque(context).takeUnretainedValue()
-            monitor.handleHIDInput(value)
-        }, context)
-        
-        // Use commonModes to ensure callbacks work during UI interactions
-        IOHIDManagerScheduleWithRunLoop(manager, CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue)
-        
-        let result = IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
-        if result == kIOReturnSuccess {
-            logger.info("HID", "HID manager opened successfully")
-            
-            // Log currently connected devices
-            if let devices = IOHIDManagerCopyDevices(manager) as? Set<IOHIDDevice> {
-                var keyboardCount = 0
-                
-                if devices.isEmpty {
-                    logger.warning("HID", "No HID devices found - Input Monitoring permission may be required")
-                    logger.warning("HID", "Go to: System Settings > Privacy & Security > Input Monitoring")
-                }
-                
-                for device in devices {
-                    if let name = getHIDDeviceProperty(device, key: kIOHIDProductKey) as? String {
-                        let usagePage = getHIDDeviceProperty(device, key: kIOHIDPrimaryUsagePageKey) as? Int ?? 0
-                        let usage = getHIDDeviceProperty(device, key: kIOHIDPrimaryUsageKey) as? Int ?? 0
-                        
-                        // Only log keyboards at startup to reduce noise
-                        if usagePage == kHIDPage_GenericDesktop && usage == kHIDUsage_GD_Keyboard || isKeyboardByName(name) {
-                            logger.info("HID", "Keyboard detected: \(name)")
-                            keyboardCount += 1
-                        }
-                    }
-                }
-                logger.info("HID", "Monitoring \(keyboardCount) keyboard(s) out of \(devices.count) HID devices")
-            }
+        runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        if let runLoopSource = runLoopSource {
+            CFRunLoopAddSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
+            CGEvent.tapEnable(tap: tap, enable: true)
+            logger.info("HID", "CGEventTap started successfully. Waiting for keystrokes...")
         } else {
-            // Map common error codes
-            let errorDescription: String
-            switch result {
-            case kIOReturnNotPermitted:
-                errorDescription = "Not permitted - Input Monitoring permission required"
-            case kIOReturnExclusiveAccess:
-                errorDescription = "Exclusive access denied - another app may be using HID"
-            case kIOReturnNotPrivileged:
-                errorDescription = "Not privileged - app needs elevated permissions"
-            default:
-                errorDescription = "Error code: \(result)"
-            }
-            logger.error("HID", "Failed to open HID manager: \(errorDescription)")
-            logger.error("HID", "Please grant Input Monitoring permission in System Settings")
+            logger.error("HID", "Failed to create CFRunLoopSource for CGEventTap.")
         }
     }
     
     private func stopHIDMonitoring() {
-        guard let manager = hidManager else { return }
-        
-        logger.info("HID", "Stopping HID monitoring...")
-        
-        IOHIDManagerUnscheduleFromRunLoop(manager, CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue)
-        IOHIDManagerClose(manager, IOOptionBits(kIOHIDOptionsTypeNone))
-        hidManager = nil
-        
-        logger.info("HID", "HID monitoring stopped")
+        if let runLoopSource = runLoopSource {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
+            self.runLoopSource = nil
+        }
+        if let tap = eventTap {
+            logger.info("HID", "Stopping Global Keyboard monitoring (CGEventTap)...")
+            CGEvent.tapEnable(tap: tap, enable: false)
+            self.eventTap = nil
+            logger.info("HID", "Global Keyboard monitoring stopped")
+        }
     }
     
     // MARK: - Health Check
@@ -364,11 +256,11 @@ final class BluetoothMonitor: ObservableObject {
         
         let timeSinceLastActivity = Date().timeIntervalSince(lastHIDActivity)
         
-        logger.debug("HID", "Health check: last activity \(Int(timeSinceLastActivity))s ago, manager: \(hidManager != nil ? "active" : "nil")")
+        logger.debug("HID", "Health check: last activity \(Int(timeSinceLastActivity))s ago, monitor: \(eventTap != nil ? "active" : "nil")")
         
-        // Check if HID manager is still valid
-        if hidManager == nil {
-            logger.warning("HID", "Health check: HID manager is nil, restarting...")
+        // Check if event monitor is still valid
+        if eventTap == nil {
+            logger.warning("HID", "Health check: Event tap is nil, restarting...")
             startHIDMonitoring()
             return
         }
@@ -383,266 +275,76 @@ final class BluetoothMonitor: ObservableObject {
     
     // MARK: - HID Callbacks
     
-    private func handleDeviceAdded(_ device: IOHIDDevice) {
-        guard let name = getHIDDeviceProperty(device, key: kIOHIDProductKey) as? String else { return }
-        
-        let usagePage = getHIDDeviceProperty(device, key: kIOHIDPrimaryUsagePageKey) as? Int ?? 0
-        let usage = getHIDDeviceProperty(device, key: kIOHIDPrimaryUsageKey) as? Int ?? 0
-        let isKeyboardByUsage = (usagePage == kHIDPage_GenericDesktop && usage == kHIDUsage_GD_Keyboard)
-        
-        if isKeyboardByUsage || isKeyboardByName(name) {
-            logger.info("HID", "Keyboard connected: \(name)")
-        } else if !name.lowercased().contains("mouse") {
-            logger.debug("HID", "Device connected: \(name)")
-        }
-    }
-    
-    private func handleDeviceRemoved(_ device: IOHIDDevice) {
-        guard let name = getHIDDeviceProperty(device, key: kIOHIDProductKey) as? String else { return }
-        
-        let usagePage = getHIDDeviceProperty(device, key: kIOHIDPrimaryUsagePageKey) as? Int ?? 0
-        let usage = getHIDDeviceProperty(device, key: kIOHIDPrimaryUsageKey) as? Int ?? 0
-        let isKeyboardByUsage = (usagePage == kHIDPage_GenericDesktop && usage == kHIDUsage_GD_Keyboard)
-        
-        if isKeyboardByUsage || isKeyboardByName(name) {
-            logger.info("HID", "Keyboard disconnected: \(name)")
-        } else if !name.lowercased().contains("mouse") {
-            logger.debug("HID", "Device disconnected: \(name)")
-        }
-    }
-    
-    private func handleHIDInput(_ value: IOHIDValue) {
-        let element = IOHIDValueGetElement(value)
-        let device = IOHIDElementGetDevice(element)
-        
-        // Update last HID activity for health check
+    private func handleGlobalKeyEvent() {
+        // Update last activity for health check
         lastHIDActivity = Date()
         
-        // Record HID event for statistics
+        // Record event for statistics
         AppLogger.shared.recordHIDEvent()
         
-        // Get device name
-        guard let deviceName = getHIDDeviceProperty(device, key: kIOHIDProductKey) as? String else {
-            return
-        }
-        
-        // Check usage page to filter for keyboards
-        let usagePage = getHIDDeviceProperty(device, key: kIOHIDPrimaryUsagePageKey) as? Int ?? 0
-        let usage = getHIDDeviceProperty(device, key: kIOHIDPrimaryUsageKey) as? Int ?? 0
-        
-        // Log all input occasionally for debugging
         let now = Date()
-        let debugKey = "__debug_\(deviceName)__"
-        let lastLog = lastKeyboardActivity[debugKey] ?? Date.distantPast
         
-        // Only log non-keyboard devices very infrequently (every 30s) to avoid spam
-        // Log keyboards more frequently (every 5s)
-        let isKeyboardByUsage = (usagePage == kHIDPage_GenericDesktop && usage == kHIDUsage_GD_Keyboard)
-        let isKeyboardByNameMatch = isKeyboardByName(deviceName)
-        let isProbablyKeyboard = isKeyboardByUsage || isKeyboardByNameMatch
-        
-        let logInterval: TimeInterval = isProbablyKeyboard ? 5.0 : 30.0
-        
-        if now.timeIntervalSince(lastLog) > logInterval {
-            lastKeyboardActivity[debugKey] = now
-            if isProbablyKeyboard {
-                logger.debug("HID", "Keyboard input: \(deviceName)")
-            } else {
-                // Don't log mouse movements by default unless they look like keyboards
-                if deviceName.lowercased().contains("mouse") {
-                    // Skip logging mice entirely to reduce noise
-                } else {
-                    logger.debug("HID", "Other input: \(deviceName) (page:\(usagePage) usage:\(usage))")
-                }
-            }
-        }
-        
-        guard isProbablyKeyboard else {
-            return
-        }
+        // Since we can't identify the hardware source with NSEvent, 
+        // we treat all keyboard input as coming from a generic "Active Keyboard"
+        let deviceName = "Global Keyboard"
         
         let lastActivity = lastKeyboardActivity[deviceName] ?? Date.distantPast
         let timeSinceLastActivity = now.timeIntervalSince(lastActivity)
         
-        // Debounce: only process if more than 0.5 second since last activity for this keyboard
+        // Debounce: only process if more than 0.5 second since last activity
         guard timeSinceLastActivity > 0.5 else {
             return
         }
         
         lastKeyboardActivity[deviceName] = now
+        logger.debug("HID", "Keystroke detected")
         
-        // Find matching keyboard in paired list or create temporary one
-        guard let keyboard = findMatchingKeyboard(deviceName) else {
-            logger.warning("HID", "Keyboard activity from '\(deviceName)' but no match found")
-            return
-        }
+        // We simulate a generic keyboard since we don't know the exact device
+        let simulatedKeyboard = BluetoothKeyboardInfo(
+            id: "global_keyboard",
+            name: "Active Keyboard"
+        )
         
-        // Determine if we should send a switch event
-        let isDifferentKeyboard = lastActiveKeyboard?.id != keyboard.id
         let isReactivation = timeSinceLastActivity > 5.0
-        
         var shouldTrigger = false
         var reason = ""
         
-        if isDifferentKeyboard {
+        if lastActiveKeyboard?.id != simulatedKeyboard.id {
             shouldTrigger = true
-            reason = "different keyboard"
+            reason = "initial keyboard activation"
         } else if isReactivation {
-            let lastSwitchTime = lastSwitchEventTime[keyboard.id] ?? Date.distantPast
+            let lastSwitchTime = lastSwitchEventTime[simulatedKeyboard.id] ?? Date.distantPast
             let timeSinceLastSwitch = now.timeIntervalSince(lastSwitchTime)
             
             if timeSinceLastSwitch >= switchEventCooldown {
                 shouldTrigger = true
                 reason = "reactivation after \(Int(timeSinceLastActivity))s"
             } else {
-                logger.debug("HID", "Keyboard \(keyboard.name) reactivation skipped (cooldown: \(Int(switchEventCooldown - timeSinceLastSwitch))s remaining)")
+                logger.debug("HID", "Keyboard reactivation skipped (cooldown: \(Int(switchEventCooldown - timeSinceLastSwitch))s remaining)")
             }
         }
         
         if shouldTrigger {
-            logger.info("HID", "Keyboard active: \(keyboard.name) (\(reason))")
+            logger.info("HID", "Keyboard active: \(simulatedKeyboard.name) (\(reason))")
             
-            // Update last switch event time for this keyboard
-            lastSwitchEventTime[keyboard.id] = now
+            lastSwitchEventTime[simulatedKeyboard.id] = now
             
             DispatchQueue.main.async {
-                self.lastActiveKeyboard = keyboard
-                self.keyboardBecameActivePublisher.send(keyboard)
+                self.lastActiveKeyboard = simulatedKeyboard
+                self.keyboardBecameActivePublisher.send(simulatedKeyboard)
                 
                 NotificationCenter.default.post(
                     name: .bluetoothKeyboardBecameActive,
                     object: self,
-                    userInfo: ["keyboard": keyboard]
+                    userInfo: ["keyboard": simulatedKeyboard]
                 )
             }
         }
-    }
-    
-    private func findMatchingKeyboard(_ deviceName: String) -> BluetoothKeyboardInfo? {
-        let lowercaseDeviceName = deviceName.lowercased()
-        
-        // Try exact match first
-        if let keyboard = pairedKeyboards.first(where: { $0.name.lowercased() == lowercaseDeviceName }) {
-            return keyboard
-        }
-        
-        // Try partial match
-        if let keyboard = pairedKeyboards.first(where: { 
-            lowercaseDeviceName.contains($0.name.lowercased()) || 
-            $0.name.lowercased().contains(lowercaseDeviceName) 
-        }) {
-            return keyboard
-        }
-        
-        // If no match found in paired list, create a temporary keyboard info
-        // This ensures HID-detected keyboards can still trigger switches
-        if isKeyboardByName(deviceName) {
-            logger.debug("HID", "Creating temporary keyboard info for: \(deviceName)")
-            return BluetoothKeyboardInfo(
-                id: deviceName,
-                name: deviceName,
-                address: "",
-                isConnected: true,
-                isBLE: false
-            )
-        }
-        
-        return nil
-    }
-    
-    private func getHIDDeviceProperty(_ device: IOHIDDevice, key: String) -> Any? {
-        return IOHIDDeviceGetProperty(device, key as CFString)
-    }
-    
-    // MARK: - Private Methods
-    
-    private func isKeyboardByName(_ name: String) -> Bool {
-        let lowercaseName = name.lowercased()
-        return keyboardNamePatterns.contains { lowercaseName.contains($0) }
-    }
-    
-    private func scanBLEKeyboardsViaSystemProfiler() -> [BluetoothKeyboardInfo] {
-        var keyboards: [BluetoothKeyboardInfo] = []
-        
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/sbin/system_profiler")
-        process.arguments = ["SPBluetoothDataType", "-xml"]
-        
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-        
-        do {
-            try process.run()
-            process.waitUntilExit()
-            
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            
-            if let plist = try PropertyListSerialization.propertyList(from: data, format: nil) as? [[String: Any]] {
-                keyboards = parseBluetoothPlist(plist)
-            }
-        } catch {
-            logger.error("BT", "system_profiler error: \(error)")
-        }
-        
-        return keyboards
-    }
-    
-    private func parseBluetoothPlist(_ plist: [[String: Any]]) -> [BluetoothKeyboardInfo] {
-        var keyboards: [BluetoothKeyboardInfo] = []
-        
-        for item in plist {
-            guard let items = item["_items"] as? [[String: Any]] else { continue }
-            
-            for controller in items {
-                if let connected = controller["device_connected"] as? [[String: Any]] {
-                    for device in connected {
-                        if let keyboard = parseBluetoothDevice(device, isConnected: true) {
-                            keyboards.append(keyboard)
-                        }
-                    }
-                }
-                
-                if let notConnected = controller["device_not_connected"] as? [[String: Any]] {
-                    for device in notConnected {
-                        if let keyboard = parseBluetoothDevice(device, isConnected: false) {
-                            keyboards.append(keyboard)
-                        }
-                    }
-                }
-            }
-        }
-        
-        return keyboards
-    }
-    
-    private func parseBluetoothDevice(_ device: [String: Any], isConnected: Bool) -> BluetoothKeyboardInfo? {
-        guard let name = device["_name"] as? String else { return nil }
-        
-        let minorType = device["device_minorType"] as? String ?? ""
-        let isKeyboardByType = minorType.lowercased().contains("keyboard")
-        let isKeyboardByName = self.isKeyboardByName(name)
-        
-        guard isKeyboardByType || isKeyboardByName else { return nil }
-        
-        let address = device["device_address"] as? String ?? UUID().uuidString
-        let services = device["device_services"] as? String ?? ""
-        let isBLE = services.contains("BLE")
-        
-        return BluetoothKeyboardInfo(
-            id: address,
-            name: name,
-            address: address,
-            isConnected: isConnected,
-            isBLE: isBLE
-        )
     }
 }
 
 // MARK: - Notification Names
 
 extension Notification.Name {
-    static let bluetoothKeyboardConnected = Notification.Name("bluetoothKeyboardConnected")
-    static let bluetoothKeyboardDisconnected = Notification.Name("bluetoothKeyboardDisconnected")
     static let bluetoothKeyboardBecameActive = Notification.Name("bluetoothKeyboardBecameActive")
 }
