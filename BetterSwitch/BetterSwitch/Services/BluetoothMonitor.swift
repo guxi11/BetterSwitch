@@ -134,6 +134,11 @@ final class BluetoothMonitor: ObservableObject {
         
         logger.info("BT", "Starting monitoring...")
         
+        // Check and request accessibility permission
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
+        let trusted = AXIsProcessTrustedWithOptions(options)
+        logger.info("BT", "Accessibility trusted: \(trusted)")
+        
         DispatchQueue.main.async {
             self.isMonitoring = true
             self.lastError = nil
@@ -197,14 +202,28 @@ final class BluetoothMonitor: ObservableObject {
             return Unmanaged.passRetained(event)
         }
         
+        // Use .listenOnly instead of .defaultTap - macOS 26 restricts .defaultTap even with accessibility permission
         eventTap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
             place: .headInsertEventTap,
-            options: .defaultTap,
+            options: .listenOnly,
             eventsOfInterest: CGEventMask(eventMask),
             callback: callback,
             userInfo: context
         )
+        
+        // Fallback: try .cghidEventTap if session tap fails
+        if eventTap == nil {
+            logger.warning("HID", "Session event tap failed, trying HID event tap...")
+            eventTap = CGEvent.tapCreate(
+                tap: .cghidEventTap,
+                place: .headInsertEventTap,
+                options: .listenOnly,
+                eventsOfInterest: CGEventMask(eventMask),
+                callback: callback,
+                userInfo: context
+            )
+        }
         
         guard let tap = eventTap else {
             logger.error("HID", "Failed to create CGEventTap. Ensure Accessibility permissions are granted.")
