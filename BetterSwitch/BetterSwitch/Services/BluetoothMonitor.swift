@@ -41,7 +41,7 @@ final class BluetoothMonitor: ObservableObject {
     private var healthCheckTimer: Timer?
     private var lastHIDActivity: Date = Date()
     
-    private let switchEventCooldown: TimeInterval = 30.0
+    private let switchEventCooldown: TimeInterval = 5.0
     private let logger = AppLogger.shared
     
     private var workspaceObserver: NSObjectProtocol?
