@@ -51,6 +51,20 @@ If you use one monitor with multiple Macs (e.g., work laptop + personal Mac) and
 4. Click the keyboard to select your Bluetooth keyboard
 5. Done! Switch keyboards and watch your monitor follow.
 
+## Permissions
+
+BetterSwitch requires the following system permissions to function:
+
+| Permission | Why |
+|---|---|
+| **Bluetooth** | Detect keyboard connections and disconnections |
+| **Input Monitoring** | Monitor keyboard activity to trigger input switching |
+| **Accessibility** | Monitor global keyboard events |
+
+You'll be prompted to grant these on first launch. You can manage them anytime in **System Settings → Privacy & Security**.
+
+> **Note:** The app runs without sandbox (`app-sandbox = false`) because direct DDC/CI communication with monitors via IOKit I2C requires unrestricted hardware access.
+
 ## Troubleshooting
 
 **Monitor not detected?**
